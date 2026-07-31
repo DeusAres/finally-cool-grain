@@ -1,0 +1,430 @@
+<!doctype html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>grain// physical film grain simulator</title>
+<style>
+  :root{
+    --bg: #0b0b0c;
+    --panel: #131315;
+    --line: #2a2a2d;
+    --text: #d8d6d0;
+    --dim: #7a7873;
+    --safelight: #c9432e;
+    --safelight-dim: #7a2b20;
+    --mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
+  }
+  *{ box-sizing:border-box; }
+  html,body{
+    margin:0; height:100%; background:var(--bg); color:var(--text);
+    font-family: var(--mono); font-size:13px;
+  }
+  body{ display:flex; flex-direction:column; }
+
+  header{
+    display:flex; align-items:center; justify-content:space-between;
+    padding:14px 20px; border-bottom:1px solid var(--line);
+    flex-shrink:0;
+  }
+  header .logo{
+    font-size:14px; letter-spacing:0.02em; color:var(--text);
+  }
+  header .logo span{ color:var(--safelight); }
+  header .meta{ color:var(--dim); font-size:11px; }
+
+  main{
+    flex:1; display:flex; min-height:0;
+  }
+
+  .stage{
+    flex:1; display:flex; align-items:center; justify-content:center;
+    background:
+      repeating-conic-gradient(#0f0f10 0% 25%, #0a0a0b 0% 50%) 50%/20px 20px;
+    position:relative; overflow:hidden;
+    border-right:1px solid var(--line);
+  }
+  .stage.drag::after{
+    content:'drop image'; position:absolute; inset:0;
+    display:flex; align-items:center; justify-content:center;
+    background:rgba(201,67,46,0.08); color:var(--safelight);
+    border:1px dashed var(--safelight); letter-spacing:0.1em; font-size:12px;
+    pointer-events:none;
+  }
+  .stage canvas{
+    max-width:92%; max-height:92%; box-shadow:0 20px 60px rgba(0,0,0,0.6);
+  }
+  .stage .empty{
+    color:var(--dim); text-align:center; font-size:12px; line-height:1.8;
+  }
+  .stage .empty label{
+    display:inline-block; margin-top:10px; padding:8px 16px;
+    border:1px solid var(--line); color:var(--text); cursor:pointer;
+  }
+  .stage .empty label:hover{ border-color:var(--safelight); color:var(--safelight); }
+
+  aside{
+    width:320px; flex-shrink:0; background:var(--panel);
+    display:flex; flex-direction:column; overflow-y:auto;
+  }
+  .group{ padding:16px 20px; border-bottom:1px solid var(--line); }
+  .group h3{
+    margin:0 0 12px; font-size:10px; letter-spacing:0.12em; color:var(--dim);
+    text-transform:uppercase; font-weight:400;
+  }
+  .row{ margin-bottom:14px; }
+  .row:last-child{ margin-bottom:0; }
+  .row .label{
+    display:flex; justify-content:space-between; margin-bottom:6px;
+    font-size:11px; color:var(--text);
+  }
+  .row .label .val{ color:var(--safelight); font-variant-numeric:tabular-nums; }
+
+  input[type=range]{
+    -webkit-appearance:none; width:100%; height:2px; background:var(--line);
+    outline:none; margin:0;
+  }
+  input[type=range]::-webkit-slider-thumb{
+    -webkit-appearance:none; width:11px; height:11px; border-radius:50%;
+    background:var(--text); cursor:pointer; margin-top:-4.5px;
+    border:2px solid var(--panel); box-shadow:0 0 0 1px var(--line);
+  }
+  input[type=range]:hover::-webkit-slider-thumb{ background:var(--safelight); }
+
+  .btnrow{ display:flex; gap:8px; }
+  button{
+    font-family:var(--mono); font-size:11px; background:transparent;
+    color:var(--text); border:1px solid var(--line); padding:9px 12px;
+    cursor:pointer; flex:1; letter-spacing:0.03em;
+  }
+  button:hover{ border-color:var(--safelight); color:var(--safelight); }
+  button.primary{ background:var(--safelight); border-color:var(--safelight); color:#150705; }
+  button.primary:hover{ background:#e0522f; color:#150705; }
+
+  .toggle{
+    display:flex; align-items:center; justify-content:space-between;
+    font-size:11px; margin-bottom:14px;
+  }
+  .swatch{
+    display:inline-flex; width:34px; height:16px; border:1px solid var(--line);
+    position:relative; cursor:pointer; background:var(--bg);
+  }
+  .swatch.on{ border-color:var(--safelight); }
+  .swatch::after{
+    content:''; position:absolute; top:1px; left:1px; width:12px; height:12px;
+    background:var(--dim); transition:transform .12s ease;
+  }
+  .swatch.on::after{ background:var(--safelight); transform:translateX(17px); }
+
+  .hist{ height:44px; display:flex; align-items:flex-end; gap:1px; margin-top:10px; }
+  .hist div{ flex:1; background:var(--line); }
+
+  #file-input{ display:none; }
+  footer{ padding:10px 20px; border-top:1px solid var(--line); font-size:10px; color:var(--dim); }
+  a{ color:var(--dim); }
+  a:hover{ color:var(--safelight); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="logo">grain<span>//</span> physical film grain simulator</div>
+  <div class="meta" id="dims-readout">no image loaded</div>
+</header>
+
+<main>
+  <div class="stage" id="stage">
+    <div class="empty" id="empty-state">
+      drag an image here, or<br>
+      <label for="file-input">choose file</label>
+    </div>
+    <canvas id="canvas" style="display:none"></canvas>
+    <input type="file" id="file-input" accept="image/*">
+  </div>
+
+  <aside>
+    <div class="group">
+      <h3>Grain</h3>
+      <div class="row">
+        <div class="label"><span>intensity</span><span class="val" id="v-intensity">28</span></div>
+        <input type="range" id="intensity" min="0" max="100" value="28">
+      </div>
+      <div class="row">
+        <div class="label"><span>size (ISO proxy)</span><span class="val" id="v-size">1.6</span></div>
+        <input type="range" id="size" min="5" max="50" value="16">
+      </div>
+      <div class="row">
+        <div class="label"><span>clumping</span><span class="val" id="v-clump">55</span></div>
+        <input type="range" id="clump" min="0" max="100" value="55">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Distribution</h3>
+      <div class="row">
+        <div class="label"><span>shadow bias</span><span class="val" id="v-bias">0.60</span></div>
+        <input type="range" id="bias" min="20" max="150" value="60">
+      </div>
+      <div class="row">
+        <div class="label"><span>channel independence</span><span class="val" id="v-chan">70</span></div>
+        <input type="range" id="chan" min="0" max="100" value="70">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Seed</h3>
+      <div class="btnrow">
+        <button id="reseed">reseed</button>
+        <button id="download" class="primary">download PNG</button>
+      </div>
+      <div class="hist" id="hist"></div>
+    </div>
+  </aside>
+</main>
+
+<footer>
+  processing runs client-side, nothing uploaded · <a href="https://github.com/" target="_blank">source on GitHub</a>
+</footer>
+
+<script>
+"use strict";
+
+/* ---------- noise generation ---------- */
+
+// Box-Muller gaussian generator, cached second value
+let bmCache = null;
+function gaussian(){
+  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
+  let u=0,v=0;
+  while(u===0) u = Math.random();
+  while(v===0) v = Math.random();
+  const mag = Math.sqrt(-2.0*Math.log(u));
+  bmCache = mag*Math.sin(2.0*Math.PI*v);
+  return mag*Math.cos(2.0*Math.PI*v);
+}
+
+function makeNoiseField(w,h){
+  const f = new Float32Array(w*h);
+  for (let i=0;i<f.length;i++) f[i] = gaussian();
+  return f;
+}
+
+// separable box blur, 3 passes ~= gaussian. Operates in place on a copy.
+function boxBlur(src,w,h,radius){
+  if (radius < 0.5) return src.slice();
+  let a = src.slice();
+  let b = new Float32Array(w*h);
+  const r = Math.max(1, Math.round(radius));
+  for (let pass=0; pass<3; pass++){
+    // horizontal
+    for (let y=0;y<h;y++){
+      let acc=0; const row=y*w;
+      for (let x=-r;x<=r;x++) acc += a[row + clampI(x,0,w-1)];
+      for (let x=0;x<w;x++){
+        b[row+x] = acc/(2*r+1);
+        acc -= a[row + clampI(x-r,0,w-1)];
+        acc += a[row + clampI(x+r+1,0,w-1)];
+      }
+    }
+    // vertical
+    for (let x=0;x<w;x++){
+      let acc=0;
+      for (let y=-r;y<=r;y++) acc += b[clampI(y,0,h-1)*w+x];
+      for (let y=0;y<h;y++){
+        a[y*w+x] = acc/(2*r+1);
+        acc -= b[clampI(y-r,0,h-1)*w+x];
+        acc += b[clampI(y+r+1,0,h-1)*w+x];
+      }
+    }
+  }
+  return a;
+}
+function clampI(v,lo,hi){ return v<lo?lo:(v>hi?hi:v); }
+
+// low-res coarse density field, upscaled with bilinear -> drives clumping
+function makeClumpMask(w,h,strength){
+  if (strength <= 0.001) return null;
+  const cw = Math.max(2, Math.round(w/28));
+  const ch = Math.max(2, Math.round(h/28));
+  let coarse = makeNoiseField(cw,ch);
+  coarse = boxBlur(coarse, cw, ch, 1.2); // smooth the coarse field itself
+  const mask = new Float32Array(w*h);
+  for (let y=0;y<h;y++){
+    const fy = (y/(h-1))*(ch-1);
+    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
+    for (let x=0;x<w;x++){
+      const fx = (x/(w-1))*(cw-1);
+      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
+      const c00=coarse[y0*cw+x0], c10=coarse[y0*cw+x1];
+      const c01=coarse[y1*cw+x0], c11=coarse[y1*cw+x1];
+      const top = c00 + (c10-c00)*tx;
+      const bot = c01 + (c11-c01)*tx;
+      let v = top + (bot-top)*ty;           // roughly N(0,1)
+      v = 1 + v*strength*0.9;               // density multiplier around 1.0
+      mask[y*w+x] = Math.max(0.15, v);
+    }
+  }
+  return mask;
+}
+
+/* ---------- state ---------- */
+let img = null;
+let seedFields = null; // {r,g,b,mono}
+
+const els = {};
+["intensity","size","clump","bias","chan"].forEach(id => els[id] = document.getElementById(id));
+const vEls = {
+  intensity: document.getElementById("v-intensity"),
+  size: document.getElementById("v-size"),
+  clump: document.getElementById("v-clump"),
+  bias: document.getElementById("v-bias"),
+  chan: document.getElementById("v-chan"),
+};
+
+function readParams(){
+  return {
+    intensity: +els.intensity.value,
+    size: +els.size.value / 10,      // blur radius in px
+    clump: +els.clump.value / 100,
+    bias: +els.bias.value / 100,     // <1 pulls grain peak toward shadows
+    chan: +els.chan.value / 100,
+  };
+}
+
+function updateReadout(){
+  const p = readParams();
+  vEls.intensity.textContent = p.intensity;
+  vEls.size.textContent = p.size.toFixed(1);
+  vEls.clump.textContent = Math.round(p.clump*100);
+  vEls.bias.textContent = p.bias.toFixed(2);
+  vEls.chan.textContent = Math.round(p.chan*100);
+}
+
+/* ---------- core render ---------- */
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently:true });
+let srcImageData = null;
+
+const MAX_DIM = 2200; // perf ceiling for pure-JS box blur
+
+function loadImage(file){
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    img = image;
+    let w = image.width, h = image.height;
+    const scale = Math.min(1, MAX_DIM / Math.max(w,h));
+    w = Math.round(w*scale); h = Math.round(h*scale);
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(image, 0, 0, w, h);
+    srcImageData = ctx.getImageData(0,0,w,h);
+    document.getElementById("empty-state").style.display = "none";
+    canvas.style.display = "block";
+    document.getElementById("dims-readout").textContent = `${w}×${h}px`;
+    reseed();
+  };
+  image.src = url;
+}
+
+function reseed(){
+  if (!srcImageData) return;
+  const w = canvas.width, h = canvas.height;
+  seedFields = {
+    r: makeNoiseField(w,h),
+    g: makeNoiseField(w,h),
+    b: makeNoiseField(w,h),
+  };
+  render();
+}
+
+function render(){
+  if (!srcImageData || !seedFields) return;
+  const p = readParams();
+  const w = canvas.width, h = canvas.height;
+
+  const blurRadius = p.size;
+  const rN = boxBlur(seedFields.r, w, h, blurRadius);
+  const gN = boxBlur(seedFields.g, w, h, blurRadius);
+  const bN = boxBlur(seedFields.b, w, h, blurRadius);
+
+  // mono field = average of the three, used when channel independence is low
+  const monoN = new Float32Array(w*h);
+  for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
+
+  const clumpMask = makeClumpMask(w,h,p.clump);
+
+  const out = ctx.createImageData(w,h);
+  const src = srcImageData.data;
+  const amp = p.intensity * 0.9; // display units -> pixel value stddev scale
+
+  for (let i=0, px=0; px < w*h; px++, i+=4){
+    const r0 = src[i], g0 = src[i+1], b0 = src[i+2];
+    const lum = (r0+g0+b0) / (3*255);
+
+    // shadow-biased parabola: 0 at pure black/white, peak shifted by bias
+    const l = Math.pow(lum, p.bias);
+    const weight = 4 * l * (1 - l);
+
+    const cf = clumpMask ? clumpMask[px] : 1;
+
+    const nr = (monoN[px]*(1-p.chan) + rN[px]*p.chan) * weight * cf * amp;
+    const ng = (monoN[px]*(1-p.chan) + gN[px]*p.chan) * weight * cf * amp;
+    const nb = (monoN[px]*(1-p.chan) + bN[px]*p.chan) * weight * cf * amp;
+
+    out.data[i]   = clamp8(r0 + nr);
+    out.data[i+1] = clamp8(g0 + ng);
+    out.data[i+2] = clamp8(b0 + nb);
+    out.data[i+3] = src[i+3];
+  }
+  ctx.putImageData(out,0,0);
+  drawHistogram(out.data, w, h);
+}
+function clamp8(v){ return v<0?0:(v>255?255:v|0); }
+
+function drawHistogram(data,w,h){
+  const bins = new Array(24).fill(0);
+  const step = Math.max(1, Math.floor((w*h)/20000)); // sample for speed
+  let maxCount = 1;
+  for (let px=0; px<w*h; px+=step){
+    const i = px*4;
+    const lum = (data[i]+data[i+1]+data[i+2])/3;
+    const bin = Math.min(23, Math.floor(lum/256*24));
+    bins[bin]++;
+  }
+  bins.forEach(c => { if(c>maxCount) maxCount=c; });
+  const host = document.getElementById("hist");
+  host.innerHTML = "";
+  bins.forEach(c => {
+    const d = document.createElement("div");
+    d.style.height = Math.max(2, (c/maxCount)*44) + "px";
+    host.appendChild(d);
+  });
+}
+
+/* ---------- wiring ---------- */
+["intensity","size","clump","bias","chan"].forEach(id => {
+  els[id].addEventListener("input", () => { updateReadout(); render(); });
+});
+document.getElementById("reseed").addEventListener("click", reseed);
+document.getElementById("download").addEventListener("click", () => {
+  const a = document.createElement("a");
+  a.download = "grain.png";
+  a.href = canvas.toDataURL("image/png");
+  a.click();
+});
+
+const fileInput = document.getElementById("file-input");
+fileInput.addEventListener("change", e => { if (e.target.files[0]) loadImage(e.target.files[0]); });
+
+const stage = document.getElementById("stage");
+stage.addEventListener("dragover", e => { e.preventDefault(); stage.classList.add("drag"); });
+stage.addEventListener("dragleave", () => stage.classList.remove("drag"));
+stage.addEventListener("drop", e => {
+  e.preventDefault(); stage.classList.remove("drag");
+  if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]);
+});
+
+updateReadout();
+</script>
+</body>
+</html>
