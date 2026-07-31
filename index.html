@@ -17,7 +17,7 @@
   *{ box-sizing:border-box; }
   html,body{
     margin:0; height:100%; background:var(--bg); color:var(--text);
-    font-family: var(--mono); font-size:13px;
+    font-family: var(--mono); font-size:12px;
     overscroll-behavior-y: none;
     padding-top: env(safe-area-inset-top);
     padding-bottom: env(safe-area-inset-bottom);
@@ -28,10 +28,10 @@
 
   header{
     display:flex; align-items:center; justify-content:space-between;
-    padding:10px 20px; border-bottom:1px solid var(--line);
+    padding:8px 16px; border-bottom:1px solid var(--line);
     flex-shrink:0; background: var(--panel);
   }
-  header .logo{ font-size:14px; letter-spacing:0.02em; font-weight: bold; }
+  header .logo{ font-size:13px; letter-spacing:0.02em; font-weight: bold; }
   header .logo span{ color:var(--safelight); }
   
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -41,84 +41,107 @@
     background: transparent; color: var(--text); border: 2px solid var(--text);
     display: flex; align-items: center; justify-content: center;
     font-weight: bold; cursor: pointer; box-shadow: 2px 2px 0 var(--safelight);
-    padding: 6px 12px; font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    padding: 5px 10px; font-family: var(--mono); font-size: 10px; text-transform: uppercase;
     transition: transform 0.1s, box-shadow 0.1s; image-rendering: pixelated;
   }
   .pixel-btn:active { transform: translate(2px, 2px); box-shadow: 0px 0px 0 var(--safelight); }
-  .pixel-btn.icon { width: 30px; height: 30px; padding: 0; }
+  .pixel-btn.icon { width: 28px; height: 28px; padding: 0; }
   .pixel-btn.primary { color: #150705; background: var(--safelight); border-color: var(--safelight); box-shadow: 2px 2px 0 var(--text); }
 
-  main{ flex:1; display:flex; min-height:0; position: relative; }
+  main{ flex:1; display:flex; min-height:0; position: relative; overflow: hidden; }
 
   .stage{
     flex:1; display:flex; align-items:center; justify-content:center;
     background: repeating-conic-gradient(#0f0f10 0% 25%, #0a0a0b 0% 50%) 50%/20px 20px;
-    position:relative; overflow:hidden; border-right:1px solid var(--line);
+    position:relative; overflow:auto; border-right:1px solid var(--line);
+    cursor: grab;
+    -webkit-overflow-scrolling: touch;
   }
+  .stage:active { cursor: grabbing; }
   .stage.drag::after{
     content:'drop image'; position:absolute; inset:0;
     display:flex; align-items:center; justify-content:center;
     background:rgba(201,67,46,0.08); color:var(--safelight);
-    border:1px dashed var(--safelight); letter-spacing:0.1em; font-size:12px; z-index:10;
+    border:1px dashed var(--safelight); letter-spacing:0.1em; font-size:12px; z-index:10; pointer-events: none;
   }
-  .stage canvas{
-    max-width:96%; max-height:96%; box-shadow:0 20px 60px rgba(0,0,0,0.8);
-    object-fit: contain; cursor: crosshair;
-  }
-  .stage .empty{ color:var(--dim); text-align:center; font-size:12px; line-height:1.8; }
   
+  .canvas-container {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 100%;
+    min-height: 100%;
+    padding: 40px;
+  }
+
+  .stage canvas{
+    box-shadow:0 20px 60px rgba(0,0,0,0.8);
+    display: block;
+    transform-origin: center center;
+    image-rendering: auto;
+  }
+  .stage .empty{ color:var(--dim); text-align:center; font-size:12px; line-height:1.8; pointer-events: none; }
+  
+  /* Zoom Controls Overlay on Stage */
+  .zoom-controls {
+    position: absolute; bottom: 16px; left: 16px; display: flex; gap: 6px; z-index: 30;
+    background: rgba(19, 19, 21, 0.85); padding: 4px; border: 1px solid var(--line); backdrop-filter: blur(4px);
+  }
+
   .loader {
     position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
     background: var(--safelight); color: #150705; padding: 4px 12px; font-weight: bold;
     font-size: 11px; text-transform: uppercase; opacity: 0; transition: opacity 0.2s; pointer-events: none;
-    box-shadow: 2px 2px 0 var(--text); z-index: 20;
+    box-shadow: 2px 2px 0 var(--text); z-index: 40;
   }
   .loader.active { opacity: 1; }
 
   aside{
-    width:340px; flex-shrink:0; background:var(--panel);
+    width:280px; flex-shrink:0; background:var(--panel);
     display:flex; flex-direction:column; overflow-y:auto;
+    border-left: 1px solid var(--line);
   }
   
   .collapsible-panel { display: flex; flex-direction: column; }
-  .group{ padding:16px 20px; border-bottom:1px solid var(--line); }
-  .group h3{ margin:0 0 16px; font-size:11px; letter-spacing:0.12em; color:var(--dim); text-transform:uppercase; font-weight:400; display:flex; justify-content:space-between;}
+  .group{ padding:12px 16px; border-bottom:1px solid var(--line); }
+  .group h3{ margin:0 0 10px; font-size:10px; letter-spacing:0.12em; color:var(--dim); text-transform:uppercase; font-weight:400; display:flex; justify-content:space-between;}
   
   select.preset-select {
     width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
-    padding: 8px; font-family: var(--mono); font-size: 11px; outline: none; margin-bottom: 10px;
+    padding: 6px; font-family: var(--mono); font-size: 10px; outline: none; margin-bottom: 8px;
   }
 
-  .row{ margin-bottom:20px; position: relative; }
+  .row{ margin-bottom:12px; position: relative; }
   .row:last-child{ margin-bottom:0; }
-  .row .label{ display:flex; justify-content:space-between; margin-bottom:8px; font-size:11px; color:var(--text); }
+  .row .label{ display:flex; justify-content:space-between; margin-bottom:6px; font-size:10px; color:var(--text); }
   .row .label .val{ 
-    color:var(--bg); background: var(--safelight); padding: 2px 6px; font-weight: bold;
-    font-variant-numeric:tabular-nums; border-radius: 3px; transition: transform 0.1s;
+    color:var(--bg); background: var(--safelight); padding: 1px 4px; font-weight: bold;
+    font-variant-numeric:tabular-nums; border-radius: 2px; transition: transform 0.1s;
   }
-  .row.active .label .val { transform: scale(1.2) translateY(-2px); box-shadow: 0 4px 10px rgba(201,67,46,0.4); }
+  .row.active .label .val { transform: scale(1.1) translateY(-1px); box-shadow: 0 2px 6px rgba(201,67,46,0.4); }
 
-  /* Advanced Mobile-friendly Sliders */
+  /* Compact Sliders */
   input[type=range]{
-    -webkit-appearance:none; width:100%; height:10px; background:var(--line);
-    border-radius: 5px; outline:none; margin:0; touch-action: none; 
+    -webkit-appearance:none; width:100%; height:8px; background:var(--line);
+    border-radius: 4px; outline:none; margin:0; touch-action: none; 
   }
   input[type=range]::-webkit-slider-thumb{
-    -webkit-appearance:none; width:28px; height:28px; border-radius:50%;
-    background:var(--text); cursor:pointer; margin-top:-9px;
-    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
+    -webkit-appearance:none; width:22px; height:22px; border-radius:50%;
+    background:var(--text); cursor:pointer; margin-top:-7px;
+    border:3px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
   }
   input[type=range]::-moz-range-thumb{
-    width:20px; height:20px; border-radius:50%;
+    width:16px; height:16px; border-radius:50%;
     background:var(--text); cursor:pointer;
-    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
+    border:3px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
   }
-  input[type=range]:active::-webkit-slider-thumb{ background:var(--safelight); transform: scale(1.15); }
-  input[type=range]:active::-moz-range-thumb{ background:var(--safelight); transform: scale(1.15); }
+  input[type=range]:active::-webkit-slider-thumb{ background:var(--safelight); transform: scale(1.1); }
+  input[type=range]:active::-moz-range-thumb{ background:var(--safelight); transform: scale(1.1); }
 
-  .tools-row { display: flex; gap: 10px; margin-bottom: 15px; }
+  .tools-row { display: flex; gap: 8px; margin-bottom: 10px; }
   
-  .hist{ height:50px; display:flex; align-items:flex-end; gap:1px; margin-top:14px; background: rgba(0,0,0,0.2); padding: 4px; border: 1px solid var(--line); }
+  .hist{ height:40px; display:flex; align-items:flex-end; gap:1px; margin-top:10px; background: rgba(0,0,0,0.2); padding: 3px; border: 1px solid var(--line); }
   .hist div{ flex:1; background:var(--dim); transition: height 0.1s ease-out; }
 
   #file-input{ display:none; }
@@ -135,16 +158,16 @@
     box-shadow: 8px 8px 0 rgba(201, 67, 46, 0.3); max-width: 500px; width: 100%;
     padding: 24px; position: relative; max-height: 90vh; overflow-y: auto;
   }
-  .modal-content h2 { margin-top: 0; color: var(--safelight); text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 2px dashed var(--line); padding-bottom: 10px; font-size:14px; }
-  .modal-content p, .modal-content li { font-size: 12px; line-height: 1.6; color: var(--text); }
+  .modal-content h2 { margin-top: 0; color: var(--safelight); text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 2px dashed var(--line); padding-bottom: 10px; font-size:13px; }
+  .modal-content p, .modal-content li { font-size: 11px; line-height: 1.6; color: var(--text); }
   .modal-content ul { padding-left: 20px; }
   .modal-content strong { color: var(--safelight); }
 
   /* Mobile Responsiveness */
   @media (max-width: 768px) {
-    main { flex-direction: column; overflow-y: auto; display: block; }
-    aside { width: 100%; flex-shrink: 0; border-left: none; }
-    .stage { height: 50vh; min-height: 300px; flex: none; border-right: none; border-bottom: 1px solid var(--line); }
+    main { flex-direction: column; }
+    aside { width: 100%; max-height: 40vh; flex-shrink: 0; border-left: none; border-top: 1px solid var(--line); }
+    .stage { flex: 1; height: auto; min-height: 250px; }
   }
 </style>
 </head>
@@ -163,7 +186,14 @@
   <div class="stage" id="stage">
     <div class="loader" id="loader">Processing...</div>
     <div class="empty" id="empty-state">drag an image here</div>
-    <canvas id="canvas" style="display:none"></canvas>
+    <div class="canvas-container" id="canvas-container">
+      <canvas id="canvas" style="display:none"></canvas>
+    </div>
+    <div class="zoom-controls">
+      <button class="pixel-btn icon" id="zoom-out" title="Zoom Out">-</button>
+      <button class="pixel-btn" id="zoom-fit" style="font-size:9px; padding:0 6px;" title="Fit">Fit</button>
+      <button class="pixel-btn icon" id="zoom-in" title="Zoom In">+</button>
+    </div>
     <input type="file" id="file-input" accept="image/*">
   </div>
 
@@ -214,7 +244,7 @@
 
     <div class="group">
       <h3>Output <span id="dims-readout" style="color:var(--dim); font-size:9px;"></span></h3>
-      <button id="download" class="pixel-btn primary" style="width:100%">Download PNG</button>
+      <button id="download" class="pixel-btn primary" style="width:100%">Download Max Quality JPG</button>
       <div class="hist" id="hist"></div>
     </div>
   </aside>
@@ -226,13 +256,14 @@
     <h2>Grain// Pro - Manuale</h2>
     <p>Simulazione fisica della pellicola, eseguita 100% in locale.</p>
     <ul>
-      <li><strong>Intensity:</strong> Quantità totale di grana. Modificando solo questo, il rendering è istantaneo (Cache attiva).</li>
-      <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Più alto = pellicola più sensibile. <em>Ricalcola il blur.</em></li>
-      <li><strong>Clumping:</strong> Aggregazione. Basso = rumore digitale. Alto = grumi chimici realistici. <em>Ricalcola il blur.</em></li>
-      <li><strong>Shadow Bias:</strong> Valori bassi concentrano la grana nelle ombre. Valori alti la rendono uniforme. (Cache attiva).</li>
+      <li><strong>Zoom & Pan:</strong> Zoom fluido sulla foto tramite i pulsanti o la rotellina del mouse. Trascina l'immagine per spostarti senza alterare l'interfaccia.</li>
+      <li><strong>Download JPG:</strong> Esportazione a qualità massima (100%) alla risoluzione nativa originaria dell'immagine caricata.</li>
+      <li><strong>Intensity:</strong> Quantità totale di grana. Rendering istantaneo (Cache attiva).</li>
+      <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Ricalcola il blur.</li>
+      <li><strong>Clumping:</strong> Aggregazione chimica realistica. Ricalcola il blur.</li>
+      <li><strong>Shadow Bias:</strong> Concentrazione della grana nelle ombre.</li>
       <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
     </ul>
-    <p><strong>Novità Pro:</strong> Usa il tasto <strong>◐</strong> per lo split screen Before/After. Le prestazioni sono state ottimizzate calcolando il box blur solo quando strettamente necessario, sfruttando la memoria per le variazioni di intensità.</p>
   </div>
 </div>
 
@@ -269,7 +300,13 @@ for(let k in els) vEls[k] = document.getElementById("v-" + k);
 let img = null;
 let currentObjectUrl = null;
 let srcImageData = null;
+let originalFileDimensions = { w: 0, h: 0 };
 let isSplitScreen = false;
+
+// Zoom and Pan State
+let currentZoom = 1; // 1 means fitted nicely
+let isDragging = false;
+let startX = 0, startY = 0;
 
 // Caching objects to prevent useless heavy box blur recalculations
 let cachedNoiseFields = null; 
@@ -278,6 +315,7 @@ let currentSeedId = 1;
 
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const stage = document.getElementById("stage");
 const loader = document.getElementById("loader");
 
 // Pre-create histogram divs
@@ -307,6 +345,74 @@ function updateReadout(){
   vEls.bias.textContent = p.bias.toFixed(2);
   vEls.chan.textContent = Math.round(p.chan*100);
 }
+
+/* ---------- Zoom & Pan Handlers ---------- */
+function setZoom(newZoom, centerX, centerY) {
+  if (!canvas || canvas.style.display === 'none') return;
+  const minZoom = 0.2;
+  const maxZoom = 10;
+  newZoom = Math.max(minZoom, Math.min(maxZoom, newZoom));
+  
+  if (newZoom === currentZoom) return;
+
+  const stageRect = stage.getBoundingClientRect();
+  if (centerX === undefined) centerX = stageRect.width / 2;
+  if (centerY === undefined) centerY = stageRect.height / 2;
+
+  // Scroll offset adjustment to keep zoom centered around point or mouse
+  const scrollX = stage.scrollLeft;
+  const scrollY = stage.scrollTop;
+
+  const ratio = newZoom / currentZoom;
+  currentZoom = newZoom;
+
+  canvas.style.width = (canvas.width * currentZoom) + 'px';
+  canvas.style.height = (canvas.height * currentZoom) + 'px';
+
+  stage.scrollLeft = (scrollX + centerX) * ratio - centerX;
+  stage.scrollTop = (scrollY + centerY) * ratio - centerY;
+}
+
+document.getElementById('zoom-in').addEventListener('click', () => setZoom(currentZoom * 1.25));
+document.getElementById('zoom-out').addEventListener('click', () => setZoom(currentZoom / 1.25));
+document.getElementById('zoom-fit').addEventListener('click', () => {
+  if(!canvas || canvas.style.display === 'none') return;
+  currentZoom = 1;
+  canvas.style.width = canvas.width + 'px';
+  canvas.style.height = canvas.height + 'px';
+  stage.scrollLeft = 0;
+  stage.scrollTop = 0;
+});
+
+stage.addEventListener('wheel', (e) => {
+  if (!canvas || canvas.style.display === 'none') return;
+  e.preventDefault();
+  const rect = stage.getBoundingClientRect();
+  const mouseX = e.clientX - rect.left;
+  const mouseY = e.clientY - rect.top;
+  const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+  setZoom(currentZoom * zoomFactor, mouseX, mouseY);
+}, { passive: false });
+
+// Mouse Drag Pan
+stage.addEventListener('mousedown', (e) => {
+  if (!canvas || canvas.style.display === 'none') return;
+  isDragging = true;
+  startX = e.clientX;
+  startY = e.clientY;
+});
+
+window.addEventListener('mousemove', (e) => {
+  if (!isDragging) return;
+  const dx = e.clientX - startX;
+  const dy = e.clientY - startY;
+  startX = e.clientX;
+  startY = e.clientY;
+  stage.scrollLeft -= dx;
+  stage.scrollTop -= dy;
+});
+
+window.addEventListener('mouseup', () => { isDragging = false; });
 
 /* ---------- Noise Math ---------- */
 let bmCache = null;
@@ -372,15 +478,26 @@ function clamp8(v){ return v<0?0:(v>255?255:v|0); }
 /* ---------- Core Pipeline ---------- */
 
 function loadImage(file){
-  if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl); // Fix memory leak
+  if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
   const image = new Image();
   image.onload = () => {
     let w = image.width, h = image.height;
-    const MAX_DIM = 2200;
-    const scale = Math.min(1, MAX_DIM / Math.max(w,h));
-    w = Math.round(w*scale); h = Math.round(h*scale);
-    canvas.width = w; canvas.height = h;
+    originalFileDimensions = { w, h };
+    
+    // We render at full native image resolution for maximum quality download!
+    canvas.width = w; 
+    canvas.height = h;
+    
+    // Set display style width/height for initial fit view
+    const stageRect = stage.getBoundingClientRect();
+    const maxW = stageRect.width * 0.9;
+    const maxH = stageRect.height * 0.9;
+    currentZoom = Math.min(maxW / w, maxH / h, 1);
+    
+    canvas.style.width = (w * currentZoom) + 'px';
+    canvas.style.height = (h * currentZoom) + 'px';
+    
     ctx.drawImage(image, 0, 0, w, h);
     srcImageData = ctx.getImageData(0,0,w,h);
     
@@ -388,13 +505,12 @@ function loadImage(file){
     canvas.style.display = "block";
     document.getElementById("dims-readout").textContent = `(${w}×${h}px)`;
     
-    lastBlurParams.w = -1; // force recalc
+    lastBlurParams.w = -1;
     requestRender(true);
   };
   image.src = currentObjectUrl;
 }
 
-// Request Render with Loading indicator & Debounce
 let renderTimer = null;
 function requestRender(forceHeavy = false){
   if(!srcImageData) return;
@@ -402,14 +518,13 @@ function requestRender(forceHeavy = false){
   clearTimeout(renderTimer);
   renderTimer = setTimeout(() => {
     executeRender(forceHeavy);
-  }, 30); // small delay to allow UI to show loader
+  }, 20);
 }
 
 function executeRender(forceHeavy){
   const p = readParams();
   const w = canvas.width, h = canvas.height;
   
-  // Check if we need to regenerate the heavy blur/noise
   const needsBlur = forceHeavy || 
                     lastBlurParams.w !== w || lastBlurParams.h !== h ||
                     lastBlurParams.size !== p.size || 
@@ -433,14 +548,12 @@ function executeRender(forceHeavy){
     lastBlurParams = { size: p.size, clump: p.clump, chan: p.chan, w, h, seedId: currentSeedId };
   }
 
-  // Fast apply phase (only loops pixels once without blurring)
   const out = ctx.createImageData(w,h);
   const src = srcImageData.data;
   const amp = p.intensity * 0.9;
   const cfM = cachedNoiseFields.mask;
   const halfW = w / 2;
 
-  // Histogram calculation vars
   const bins = new Array(24).fill(0);
   const histStep = Math.max(1, Math.floor((w*h)/20000));
   let maxCount = 1;
@@ -448,7 +561,6 @@ function executeRender(forceHeavy){
   for (let i=0, px=0; px < w*h; px++, i+=4){
     const r0 = src[i], g0 = src[i+1], b0 = src[i+2];
     
-    // Split screen logic
     if(isSplitScreen && (px % w) < halfW) {
       out.data[i] = r0; out.data[i+1] = g0; out.data[i+2] = b0; out.data[i+3] = src[i+3];
       continue;
@@ -468,7 +580,6 @@ function executeRender(forceHeavy){
     out.data[i+2] = clamp8(b0 + nb);
     out.data[i+3] = src[i+3];
 
-    // Build histogram data fast
     if (px % histStep === 0 && (!isSplitScreen || (px % w) >= halfW)) {
       const outLum = (out.data[i]+out.data[i+1]+out.data[i+2])/3;
       const bin = Math.min(23, Math.floor(outLum/256*24));
@@ -477,19 +588,17 @@ function executeRender(forceHeavy){
     }
   }
 
-  // Draw Before/After line
   if (isSplitScreen) {
     for (let y=0; y<h; y++) {
       let idx = (y*w + Math.floor(halfW)) * 4;
-      out.data[idx] = 201; out.data[idx+1] = 67; out.data[idx+2] = 46; // Safelight color line
+      out.data[idx] = 201; out.data[idx+1] = 67; out.data[idx+2] = 46;
     }
   }
 
   ctx.putImageData(out,0,0);
   
-  // Update Histogram DOM efficiently
   for(let i=0; i<24; i++){
-    histDivs[i].style.height = Math.max(2, (bins[i]/maxCount)*50) + "px";
+    histDivs[i].style.height = Math.max(2, (bins[i]/maxCount)*40) + "px";
   }
 
   requestAnimationFrame(() => { loader.classList.remove('active'); });
@@ -497,18 +606,14 @@ function executeRender(forceHeavy){
 
 /* ---------- Wiring ---------- */
 
-// Input listeners
 for(let key in els){
   els[key].addEventListener("input", (e) => {
     updateReadout();
-    // Highlight the row being adjusted
     e.target.parentElement.classList.add("active");
-    // If it's a heavy param, tell requestRender to force recalculate
     const isHeavy = (key === 'size' || key === 'clump');
     requestRender(isHeavy);
   });
   els[key].addEventListener("change", (e) => { e.target.parentElement.classList.remove("active"); });
-  // Mobile fallback for active state removal
   els[key].addEventListener("touchend", (e) => { e.target.parentElement.classList.remove("active"); });
   els[key].addEventListener("mouseup", (e) => { e.target.parentElement.classList.remove("active"); });
 }
@@ -541,15 +646,21 @@ document.getElementById("reset").addEventListener("click", () => {
   updateReadout(); requestRender(true);
 });
 
+/* ---------- True Max Quality JPG Download ---------- */
 document.getElementById("download").addEventListener("click", () => {
   if (!srcImageData) return;
   const wasSplit = isSplitScreen;
-  if (wasSplit) { isSplitScreen = false; executeRender(false); } // Render full before save
+  if (wasSplit) { isSplitScreen = false; executeRender(false); }
+  
+  // Use a temporary high-performance offscreen canvas or direct export from canvas at 100% quality JPG
+  const dataUrl = canvas.toDataURL("image/jpeg", 1.0);
   
   const a = document.createElement("a");
-  a.download = "grain-pro.png";
-  a.href = canvas.toDataURL("image/png");
+  a.download = "grain-pro-max-quality.jpg";
+  a.href = dataUrl;
+  document.body.appendChild(a);
   a.click();
+  document.body.removeChild(a);
   
   if (wasSplit) { isSplitScreen = true; executeRender(false); }
 });
@@ -557,7 +668,6 @@ document.getElementById("download").addEventListener("click", () => {
 const fileInput = document.getElementById("file-input");
 fileInput.addEventListener("change", e => { if (e.target.files[0]) loadImage(e.target.files[0]); });
 
-const stage = document.getElementById("stage");
 stage.addEventListener("dragover", e => { e.preventDefault(); stage.classList.add("drag"); });
 stage.addEventListener("dragleave", () => stage.classList.remove("drag"));
 stage.addEventListener("drop", e => { e.preventDefault(); stage.classList.remove("drag"); if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]); });
