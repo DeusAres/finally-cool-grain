@@ -53,9 +53,9 @@
   .stage{
     flex:1; display:flex; align-items:center; justify-content:center;
     background: repeating-conic-gradient(#0f0f10 0% 25%, #0a0a0b 0% 50%) 50%/20px 20px;
-    position:relative; overflow:auto; border-right:1px solid var(--line);
+    position:relative; overflow:hidden; border-right:1px solid var(--line);
     cursor: grab;
-    -webkit-overflow-scrolling: touch;
+    touch-action: none;
   }
   .stage:active { cursor: grabbing; }
   .stage.drag::after{
@@ -66,13 +66,12 @@
   }
   
   .canvas-container {
-    position: relative;
+    position: absolute;
+    inset: 0;
     display: flex;
     align-items: center;
     justify-content: center;
-    min-width: 100%;
-    min-height: 100%;
-    padding: 40px;
+    pointer-events: none;
   }
 
   .stage canvas{
@@ -80,6 +79,7 @@
     display: block;
     transform-origin: center center;
     image-rendering: auto;
+    will-change: transform;
   }
   .stage .empty{ color:var(--dim); text-align:center; font-size:12px; line-height:1.8; pointer-events: none; }
   
@@ -303,8 +303,11 @@ let srcImageData = null;
 let originalFileDimensions = { w: 0, h: 0 };
 let isSplitScreen = false;
 
-// Zoom and Pan State
-let currentZoom = 1; // 1 means fitted nicely
+// Zoom and Pan State (transform-based: canvas stays centered in .stage,
+// pan/zoom applied purely via CSS transform, stage itself never scrolls)
+let currentZoom = 1;
+let panX = 0, panY = 0;
+let isFitted = true; // true = auto refit on resize; false once user manually zooms/pans
 let isDragging = false;
 let startX = 0, startY = 0;
 
@@ -346,52 +349,62 @@ function updateReadout(){
   vEls.chan.textContent = Math.round(p.chan*100);
 }
 
-/* ---------- Zoom & Pan Handlers ---------- */
-function setZoom(newZoom, centerX, centerY) {
+/* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
+const MIN_ZOOM = 0.05, MAX_ZOOM = 10;
+
+function applyTransform(){
+  canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${currentZoom})`;
+}
+
+// Fit the whole image inside the visible stage area (accounts for current
+// stage size, so it always reflects the real available space, panels included)
+function fitToScreen(){
   if (!canvas || canvas.style.display === 'none') return;
-  const minZoom = 0.2;
-  const maxZoom = 10;
-  newZoom = Math.max(minZoom, Math.min(maxZoom, newZoom));
-  
+  const stageRect = stage.getBoundingClientRect();
+  const padding = 24;
+  const availW = Math.max(1, stageRect.width - padding * 2);
+  const availH = Math.max(1, stageRect.height - padding * 2);
+  currentZoom = Math.min(availW / canvas.width, availH / canvas.height);
+  currentZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, currentZoom));
+  panX = 0; panY = 0;
+  isFitted = true;
+  applyTransform();
+}
+
+// Zoom keeping a given viewport point (clientX/clientY) visually fixed.
+// If no point given, zooms around the stage center.
+function setZoom(newZoom, clientX, clientY) {
+  if (!canvas || canvas.style.display === 'none') return;
+  newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, newZoom));
   if (newZoom === currentZoom) return;
 
   const stageRect = stage.getBoundingClientRect();
-  if (centerX === undefined) centerX = stageRect.width / 2;
-  if (centerY === undefined) centerY = stageRect.height / 2;
+  if (clientX === undefined) clientX = stageRect.left + stageRect.width / 2;
+  if (clientY === undefined) clientY = stageRect.top + stageRect.height / 2;
 
-  // Scroll offset adjustment to keep zoom centered around point or mouse
-  const scrollX = stage.scrollLeft;
-  const scrollY = stage.scrollTop;
+  const cx = clientX - stageRect.left - stageRect.width / 2;
+  const cy = clientY - stageRect.top - stageRect.height / 2;
 
-  const ratio = newZoom / currentZoom;
+  // point in canvas-space before this zoom change
+  const canvasPtX = (cx - panX) / currentZoom;
+  const canvasPtY = (cy - panY) / currentZoom;
+
   currentZoom = newZoom;
-
-  canvas.style.width = (canvas.width * currentZoom) + 'px';
-  canvas.style.height = (canvas.height * currentZoom) + 'px';
-
-  stage.scrollLeft = (scrollX + centerX) * ratio - centerX;
-  stage.scrollTop = (scrollY + centerY) * ratio - centerY;
+  panX = cx - canvasPtX * currentZoom;
+  panY = cy - canvasPtY * currentZoom;
+  isFitted = false;
+  applyTransform();
 }
 
 document.getElementById('zoom-in').addEventListener('click', () => setZoom(currentZoom * 1.25));
 document.getElementById('zoom-out').addEventListener('click', () => setZoom(currentZoom / 1.25));
-document.getElementById('zoom-fit').addEventListener('click', () => {
-  if(!canvas || canvas.style.display === 'none') return;
-  currentZoom = 1;
-  canvas.style.width = canvas.width + 'px';
-  canvas.style.height = canvas.height + 'px';
-  stage.scrollLeft = 0;
-  stage.scrollTop = 0;
-});
+document.getElementById('zoom-fit').addEventListener('click', fitToScreen);
 
 stage.addEventListener('wheel', (e) => {
   if (!canvas || canvas.style.display === 'none') return;
   e.preventDefault();
-  const rect = stage.getBoundingClientRect();
-  const mouseX = e.clientX - rect.left;
-  const mouseY = e.clientY - rect.top;
   const zoomFactor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-  setZoom(currentZoom * zoomFactor, mouseX, mouseY);
+  setZoom(currentZoom * zoomFactor, e.clientX, e.clientY);
 }, { passive: false });
 
 // Mouse Drag Pan
@@ -404,15 +417,66 @@ stage.addEventListener('mousedown', (e) => {
 
 window.addEventListener('mousemove', (e) => {
   if (!isDragging) return;
-  const dx = e.clientX - startX;
-  const dy = e.clientY - startY;
+  panX += e.clientX - startX;
+  panY += e.clientY - startY;
   startX = e.clientX;
   startY = e.clientY;
-  stage.scrollLeft -= dx;
-  stage.scrollTop -= dy;
+  isFitted = false;
+  applyTransform();
 });
 
 window.addEventListener('mouseup', () => { isDragging = false; });
+
+// Touch: 1 finger = pan, 2 fingers = pinch zoom
+let touchStartDist = 0, touchStartZoom = 1;
+function touchDist(t0, t1){
+  return Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+}
+stage.addEventListener('touchstart', (e) => {
+  if (!canvas || canvas.style.display === 'none') return;
+  if (e.touches.length === 1) {
+    isDragging = true;
+    startX = e.touches[0].clientX;
+    startY = e.touches[0].clientY;
+  } else if (e.touches.length === 2) {
+    isDragging = false;
+    touchStartDist = touchDist(e.touches[0], e.touches[1]);
+    touchStartZoom = currentZoom;
+  }
+}, { passive: true });
+
+stage.addEventListener('touchmove', (e) => {
+  if (!canvas || canvas.style.display === 'none') return;
+  if (e.touches.length === 1 && isDragging) {
+    e.preventDefault();
+    const t = e.touches[0];
+    panX += t.clientX - startX;
+    panY += t.clientY - startY;
+    startX = t.clientX;
+    startY = t.clientY;
+    isFitted = false;
+    applyTransform();
+  } else if (e.touches.length === 2) {
+    e.preventDefault();
+    const dist = touchDist(e.touches[0], e.touches[1]);
+    const midX = (e.touches[0].clientX + e.touches[1].clientX) / 2;
+    const midY = (e.touches[0].clientY + e.touches[1].clientY) / 2;
+    setZoom(touchStartZoom * (dist / touchStartDist), midX, midY);
+  }
+}, { passive: false });
+
+stage.addEventListener('touchend', () => { isDragging = false; });
+
+// Recompute fit on resize/orientation change so the photo always fits the
+// visible page area without the user having to zoom manually every time.
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { if (isFitted) fitToScreen(); }, 100);
+});
+window.addEventListener('orientationchange', () => {
+  setTimeout(fitToScreen, 150);
+});
 
 /* ---------- Noise Math ---------- */
 let bmCache = null;
@@ -488,25 +552,22 @@ function loadImage(file){
     // We render at full native image resolution for maximum quality download!
     canvas.width = w; 
     canvas.height = h;
-    
-    // Set display style width/height for initial fit view
-    const stageRect = stage.getBoundingClientRect();
-    const maxW = stageRect.width * 0.9;
-    const maxH = stageRect.height * 0.9;
-    currentZoom = Math.min(maxW / w, maxH / h, 1);
-    
-    canvas.style.width = (w * currentZoom) + 'px';
-    canvas.style.height = (h * currentZoom) + 'px';
+
+    // Display size always native; zoom/pan handled via CSS transform
+    canvas.style.width = w + 'px';
+    canvas.style.height = h + 'px';
     
     ctx.drawImage(image, 0, 0, w, h);
     srcImageData = ctx.getImageData(0,0,w,h);
     
     document.getElementById("empty-state").style.display = "none";
     canvas.style.display = "block";
+    canvas.style.pointerEvents = "auto";
     document.getElementById("dims-readout").textContent = `(${w}×${h}px)`;
     
     lastBlurParams.w = -1;
     requestRender(true);
+    fitToScreen();
   };
   image.src = currentObjectUrl;
 }
@@ -649,20 +710,37 @@ document.getElementById("reset").addEventListener("click", () => {
 /* ---------- True Max Quality JPG Download ---------- */
 document.getElementById("download").addEventListener("click", () => {
   if (!srcImageData) return;
+  const btn = document.getElementById("download");
   const wasSplit = isSplitScreen;
   if (wasSplit) { isSplitScreen = false; executeRender(false); }
-  
-  // Use a temporary high-performance offscreen canvas or direct export from canvas at 100% quality JPG
-  const dataUrl = canvas.toDataURL("image/jpeg", 1.0);
-  
-  const a = document.createElement("a");
-  a.download = "grain-pro-max-quality.jpg";
-  a.href = dataUrl;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  
-  if (wasSplit) { isSplitScreen = true; executeRender(false); }
+
+  const originalLabel = btn.textContent;
+  btn.textContent = "Exporting...";
+  btn.disabled = true;
+
+  // toBlob instead of toDataURL: avoids failures/hangs on iOS Safari and
+  // other mobile browsers when exporting large native-resolution images.
+  canvas.toBlob((blob) => {
+    btn.textContent = originalLabel;
+    btn.disabled = false;
+
+    if (!blob) {
+      alert("Errore durante l'esportazione dell'immagine. Riprova.");
+      if (wasSplit) { isSplitScreen = true; executeRender(false); }
+      return;
+    }
+
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.download = "grain-pro-max-quality.jpg";
+    a.href = url;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 2000);
+
+    if (wasSplit) { isSplitScreen = true; executeRender(false); }
+  }, "image/jpeg", 1.0);
 });
 
 const fileInput = document.getElementById("file-input");
