@@ -2,7 +2,7 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
 <title>grain// physical film grain simulator</title>
 <style>
   :root{
@@ -19,6 +19,7 @@
   html,body{
     margin:0; height:100%; background:var(--bg); color:var(--text);
     font-family: var(--mono); font-size:13px;
+    overscroll-behavior-y: none; /* Prevent bounce on mobile */
   }
   body{ display:flex; flex-direction:column; }
 
@@ -29,9 +30,29 @@
   }
   header .logo{
     font-size:14px; letter-spacing:0.02em; color:var(--text);
+    display: flex; align-items: center; gap: 10px;
   }
   header .logo span{ color:var(--safelight); }
-  header .meta{ color:var(--dim); font-size:11px; }
+  header .meta{ color:var(--dim); font-size:11px; display:flex; align-items:center; gap:12px;}
+
+  /* Pixel Art Help Button */
+  .help-btn {
+    background: transparent;
+    color: var(--text);
+    border: 2px solid var(--text);
+    width: 24px; height: 24px;
+    display: flex; align-items: center; justify-content: center;
+    font-weight: bold;
+    cursor: pointer;
+    box-shadow: 2px 2px 0 var(--safelight);
+    padding: 0;
+    transition: transform 0.1s, box-shadow 0.1s;
+    image-rendering: pixelated;
+  }
+  .help-btn:active {
+    transform: translate(2px, 2px);
+    box-shadow: 0px 0px 0 var(--safelight);
+  }
 
   main{
     flex:1; display:flex; min-height:0;
@@ -53,6 +74,7 @@
   }
   .stage canvas{
     max-width:92%; max-height:92%; box-shadow:0 20px 60px rgba(0,0,0,0.6);
+    object-fit: contain;
   }
   .stage .empty{
     color:var(--dim); text-align:center; font-size:12px; line-height:1.8;
@@ -75,61 +97,102 @@
   .row{ margin-bottom:14px; }
   .row:last-child{ margin-bottom:0; }
   .row .label{
-    display:flex; justify-content:space-between; margin-bottom:6px;
+    display:flex; justify-content:space-between; margin-bottom:10px;
     font-size:11px; color:var(--text);
   }
   .row .label .val{ color:var(--safelight); font-variant-numeric:tabular-nums; }
 
+  /* Mobile-friendly Sliders */
   input[type=range]{
-    -webkit-appearance:none; width:100%; height:2px; background:var(--line);
-    outline:none; margin:0;
+    -webkit-appearance:none; width:100%; height:8px; background:var(--line);
+    border-radius: 4px; outline:none; margin:0;
+    touch-action: none; /* Prevents page scroll when sliding on mobile */
   }
   input[type=range]::-webkit-slider-thumb{
-    -webkit-appearance:none; width:11px; height:11px; border-radius:50%;
-    background:var(--text); cursor:pointer; margin-top:-4.5px;
-    border:2px solid var(--panel); box-shadow:0 0 0 1px var(--line);
+    -webkit-appearance:none; width:22px; height:22px; border-radius:50%;
+    background:var(--text); cursor:pointer; margin-top:-7px;
+    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight);
   }
-  input[type=range]:hover::-webkit-slider-thumb{ background:var(--safelight); }
+  input[type=range]::-moz-range-thumb{
+    width:14px; height:14px; border-radius:50%;
+    background:var(--text); cursor:pointer;
+    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight);
+  }
+  input[type=range]:active::-webkit-slider-thumb{ background:var(--safelight); transform: scale(1.15); }
 
   .btnrow{ display:flex; gap:8px; }
   button{
     font-family:var(--mono); font-size:11px; background:transparent;
-    color:var(--text); border:1px solid var(--line); padding:9px 12px;
+    color:var(--text); border:1px solid var(--line); padding:12px; /* larger tap target */
     cursor:pointer; flex:1; letter-spacing:0.03em;
   }
   button:hover{ border-color:var(--safelight); color:var(--safelight); }
-  button.primary{ background:var(--safelight); border-color:var(--safelight); color:#150705; }
+  button.primary{ background:var(--safelight); border-color:var(--safelight); color:#150705; font-weight:bold; }
   button.primary:hover{ background:#e0522f; color:#150705; }
 
-  .toggle{
-    display:flex; align-items:center; justify-content:space-between;
-    font-size:11px; margin-bottom:14px;
-  }
-  .swatch{
-    display:inline-flex; width:34px; height:16px; border:1px solid var(--line);
-    position:relative; cursor:pointer; background:var(--bg);
-  }
-  .swatch.on{ border-color:var(--safelight); }
-  .swatch::after{
-    content:''; position:absolute; top:1px; left:1px; width:12px; height:12px;
-    background:var(--dim); transition:transform .12s ease;
-  }
-  .swatch.on::after{ background:var(--safelight); transform:translateX(17px); }
-
-  .hist{ height:44px; display:flex; align-items:flex-end; gap:1px; margin-top:10px; }
+  .hist{ height:44px; display:flex; align-items:flex-end; gap:1px; margin-top:14px; }
   .hist div{ flex:1; background:var(--line); }
 
   #file-input{ display:none; }
-  footer{ padding:10px 20px; border-top:1px solid var(--line); font-size:10px; color:var(--dim); }
+  footer{ padding:10px 20px; border-top:1px solid var(--line); font-size:10px; color:var(--dim); text-align:center; }
   a{ color:var(--dim); }
   a:hover{ color:var(--safelight); }
+
+  /* Pixel Art Modal Overlay */
+  .modal-overlay {
+    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+    background: rgba(11, 11, 12, 0.85);
+    display: none; justify-content: center; align-items: center;
+    z-index: 100; backdrop-filter: blur(4px);
+    padding: 20px;
+  }
+  .modal-overlay.active { display: flex; }
+  
+  .modal-content {
+    background: var(--panel);
+    border: 4px solid var(--safelight);
+    box-shadow: 8px 8px 0 rgba(201, 67, 46, 0.3);
+    max-width: 500px; width: 100%;
+    padding: 24px; position: relative;
+    max-height: 90vh; overflow-y: auto;
+  }
+  .modal-content h2 {
+    margin-top: 0; color: var(--safelight);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    border-bottom: 2px dashed var(--line); padding-bottom: 10px;
+  }
+  .modal-content p { line-height: 1.6; font-size: 12px; color: var(--text); }
+  .modal-content ul { padding-left: 20px; }
+  .modal-content li { margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: var(--dim); }
+  .modal-content li strong { color: var(--text); }
+  
+  .close-btn {
+    position: absolute; top: 16px; right: 16px;
+    background: transparent; color: var(--safelight);
+    border: 2px solid var(--safelight); width: 30px; height: 30px;
+    font-weight: bold; cursor: pointer; display: flex;
+    align-items: center; justify-content: center; padding: 0;
+    box-shadow: 2px 2px 0 var(--line); transition: transform 0.1s;
+  }
+  .close-btn:active { transform: translate(2px, 2px); box-shadow: 0 0 0; }
+
+  /* Mobile Responsiveness */
+  @media (max-width: 768px) {
+    main { flex-direction: column; overflow-y: auto; }
+    aside { width: 100%; flex-shrink: 0; border-left: none; }
+    .stage { min-height: 45vh; flex: none; border-right: none; border-bottom: 1px solid var(--line); }
+    .stage canvas { max-width: 95%; max-height: 95%; }
+  }
 </style>
 </head>
 <body>
 
 <header>
   <div class="logo">grain<span>//</span> physical film grain simulator</div>
-  <div class="meta" id="dims-readout">no image loaded</div>
+  <div class="meta">
+    <span id="dims-readout">no image loaded</span>
+    <button class="help-btn" id="open-help">?</button>
+  </div>
 </header>
 
 <main>
@@ -186,8 +249,37 @@
   processing runs client-side, nothing uploaded · <a href="https://github.com/" target="_blank">source on GitHub</a>
 </footer>
 
+<!-- Modale Help in stile Pixel Art -->
+<div class="modal-overlay" id="help-modal">
+  <div class="modal-content">
+    <button class="close-btn" id="close-help">X</button>
+    <h2>Come funziona</h2>
+    <p>Questo strumento simula la grana fisica della pellicola elaborando tutto in locale sul tuo browser. Regola gli slider per ottenere l'effetto desiderato:</p>
+    <ul>
+      <li><strong>Intensity:</strong> Controlla la forza complessiva dell'effetto grana.</li>
+      <li><strong>Size (ISO Proxy):</strong> Modifica la scala spaziale del rumore. Usa valori più alti per simulare pellicole ad alta sensibilità (es. 400 ISO o superiore).</li>
+      <li><strong>Clumping:</strong> Regola la mappa di densità che modula localmente l'intensità del rumore, producendo aggregazione in cluster naturali al posto del classico rumore digitale isotropo.</li>
+      <li><strong>Shadow Bias:</strong> Pesa l'intensità della grana in base alla luminanza del pixel. Un valore basso sposterà il picco della grana visibile verso le zone in ombra.</li>
+      <li><strong>Channel Independence:</strong> Passa da una grana monocromatica (valore 0) a tre campi di rumore indipendenti (valore 100) per i canali Rosso, Verde e Blu, imitando il comportamento degli strati chimici delle pellicole a colori.</li>
+    </ul>
+  </div>
+</div>
+
 <script>
 "use strict";
+
+/* ---------- UI logic ---------- */
+document.getElementById('open-help').addEventListener('click', () => {
+  document.getElementById('help-modal').classList.add('active');
+});
+document.getElementById('close-help').addEventListener('click', () => {
+  document.getElementById('help-modal').classList.remove('active');
+});
+document.getElementById('help-modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('help-modal')) {
+    document.getElementById('help-modal').classList.remove('active');
+  }
+});
 
 /* ---------- noise generation ---------- */
 
@@ -247,7 +339,7 @@ function makeClumpMask(w,h,strength){
   const cw = Math.max(2, Math.round(w/28));
   const ch = Math.max(2, Math.round(h/28));
   let coarse = makeNoiseField(cw,ch);
-  coarse = boxBlur(coarse, cw, ch, 1.2); // smooth the coarse field itself
+  coarse = boxBlur(coarse, cw, ch, 1.2); 
   const mask = new Float32Array(w*h);
   for (let y=0;y<h;y++){
     const fy = (y/(h-1))*(ch-1);
@@ -259,8 +351,8 @@ function makeClumpMask(w,h,strength){
       const c01=coarse[y1*cw+x0], c11=coarse[y1*cw+x1];
       const top = c00 + (c10-c00)*tx;
       const bot = c01 + (c11-c01)*tx;
-      let v = top + (bot-top)*ty;           // roughly N(0,1)
-      v = 1 + v*strength*0.9;               // density multiplier around 1.0
+      let v = top + (bot-top)*ty;           
+      v = 1 + v*strength*0.9;               
       mask[y*w+x] = Math.max(0.15, v);
     }
   }
@@ -269,7 +361,7 @@ function makeClumpMask(w,h,strength){
 
 /* ---------- state ---------- */
 let img = null;
-let seedFields = null; // {r,g,b,mono}
+let seedFields = null; 
 
 const els = {};
 ["intensity","size","clump","bias","chan"].forEach(id => els[id] = document.getElementById(id));
@@ -284,9 +376,9 @@ const vEls = {
 function readParams(){
   return {
     intensity: +els.intensity.value,
-    size: +els.size.value / 10,      // blur radius in px
+    size: +els.size.value / 10,      
     clump: +els.clump.value / 100,
-    bias: +els.bias.value / 100,     // <1 pulls grain peak toward shadows
+    bias: +els.bias.value / 100,     
     chan: +els.chan.value / 100,
   };
 }
@@ -305,7 +397,7 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently:true });
 let srcImageData = null;
 
-const MAX_DIM = 2200; // perf ceiling for pure-JS box blur
+const MAX_DIM = 2200; 
 
 function loadImage(file){
   const url = URL.createObjectURL(file);
@@ -337,6 +429,7 @@ function reseed(){
   render();
 }
 
+let renderTimer;
 function render(){
   if (!srcImageData || !seedFields) return;
   const p = readParams();
@@ -347,7 +440,6 @@ function render(){
   const gN = boxBlur(seedFields.g, w, h, blurRadius);
   const bN = boxBlur(seedFields.b, w, h, blurRadius);
 
-  // mono field = average of the three, used when channel independence is low
   const monoN = new Float32Array(w*h);
   for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
 
@@ -355,13 +447,12 @@ function render(){
 
   const out = ctx.createImageData(w,h);
   const src = srcImageData.data;
-  const amp = p.intensity * 0.9; // display units -> pixel value stddev scale
+  const amp = p.intensity * 0.9; 
 
   for (let i=0, px=0; px < w*h; px++, i+=4){
     const r0 = src[i], g0 = src[i+1], b0 = src[i+2];
     const lum = (r0+g0+b0) / (3*255);
 
-    // shadow-biased parabola: 0 at pure black/white, peak shifted by bias
     const l = Math.pow(lum, p.bias);
     const weight = 4 * l * (1 - l);
 
@@ -383,7 +474,7 @@ function clamp8(v){ return v<0?0:(v>255?255:v|0); }
 
 function drawHistogram(data,w,h){
   const bins = new Array(24).fill(0);
-  const step = Math.max(1, Math.floor((w*h)/20000)); // sample for speed
+  const step = Math.max(1, Math.floor((w*h)/20000)); 
   let maxCount = 1;
   for (let px=0; px<w*h; px+=step){
     const i = px*4;
@@ -403,10 +494,17 @@ function drawHistogram(data,w,h){
 
 /* ---------- wiring ---------- */
 ["intensity","size","clump","bias","chan"].forEach(id => {
-  els[id].addEventListener("input", () => { updateReadout(); render(); });
+  els[id].addEventListener("input", () => {
+    updateReadout();
+    // Debounce render to improve sliding performance on heavy mobile devices
+    clearTimeout(renderTimer);
+    renderTimer = setTimeout(render, 15);
+  });
 });
+
 document.getElementById("reseed").addEventListener("click", reseed);
 document.getElementById("download").addEventListener("click", () => {
+  if (!srcImageData) return;
   const a = document.createElement("a");
   a.download = "grain.png";
   a.href = canvas.toDataURL("image/png");
