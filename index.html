@@ -2,8 +2,8 @@
 <html lang="it">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
-<title>grain// physical film grain simulator</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0, viewport-fit=cover">
+<title>grain// pro physical film grain simulator</title>
 <style>
   :root{
     --bg: #0b0b0c;
@@ -12,366 +12,282 @@
     --text: #d8d6d0;
     --dim: #7a7873;
     --safelight: #c9432e;
-    --safelight-dim: #7a2b20;
     --mono: 'SF Mono', 'JetBrains Mono', 'Menlo', 'Consolas', monospace;
   }
   *{ box-sizing:border-box; }
   html,body{
     margin:0; height:100%; background:var(--bg); color:var(--text);
     font-family: var(--mono); font-size:13px;
-    overscroll-behavior-y: none; /* Prevent bounce on mobile */
+    overscroll-behavior-y: none;
+    padding-top: env(safe-area-inset-top);
+    padding-bottom: env(safe-area-inset-bottom);
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
-  body{ display:flex; flex-direction:column; }
+  body{ display:flex; flex-direction:column; overflow: hidden; }
 
   header{
     display:flex; align-items:center; justify-content:space-between;
-    padding:14px 20px; border-bottom:1px solid var(--line);
-    flex-shrink:0;
+    padding:10px 20px; border-bottom:1px solid var(--line);
+    flex-shrink:0; background: var(--panel);
   }
-  header .logo{
-    font-size:14px; letter-spacing:0.02em; color:var(--text);
-    display: flex; align-items: center; gap: 10px;
-  }
+  header .logo{ font-size:14px; letter-spacing:0.02em; font-weight: bold; }
   header .logo span{ color:var(--safelight); }
-  header .meta{ color:var(--dim); font-size:11px; display:flex; align-items:center; gap:12px;}
+  
+  .header-actions { display: flex; gap: 8px; align-items: center; }
 
-  /* Pixel Art Help Button */
-  .help-btn {
-    background: transparent;
-    color: var(--text);
-    border: 2px solid var(--text);
-    width: 24px; height: 24px;
+  /* Pixel Art Buttons */
+  .pixel-btn {
+    background: transparent; color: var(--text); border: 2px solid var(--text);
     display: flex; align-items: center; justify-content: center;
-    font-weight: bold;
-    cursor: pointer;
-    box-shadow: 2px 2px 0 var(--safelight);
-    padding: 0;
-    transition: transform 0.1s, box-shadow 0.1s;
-    image-rendering: pixelated;
+    font-weight: bold; cursor: pointer; box-shadow: 2px 2px 0 var(--safelight);
+    padding: 6px 12px; font-family: var(--mono); font-size: 11px; text-transform: uppercase;
+    transition: transform 0.1s, box-shadow 0.1s; image-rendering: pixelated;
   }
-  .help-btn:active {
-    transform: translate(2px, 2px);
-    box-shadow: 0px 0px 0 var(--safelight);
-  }
+  .pixel-btn:active { transform: translate(2px, 2px); box-shadow: 0px 0px 0 var(--safelight); }
+  .pixel-btn.icon { width: 30px; height: 30px; padding: 0; }
+  .pixel-btn.primary { color: #150705; background: var(--safelight); border-color: var(--safelight); box-shadow: 2px 2px 0 var(--text); }
 
-  main{
-    flex:1; display:flex; min-height:0;
-  }
+  main{ flex:1; display:flex; min-height:0; position: relative; }
 
   .stage{
     flex:1; display:flex; align-items:center; justify-content:center;
-    background:
-      repeating-conic-gradient(#0f0f10 0% 25%, #0a0a0b 0% 50%) 50%/20px 20px;
-    position:relative; overflow:hidden;
-    border-right:1px solid var(--line);
+    background: repeating-conic-gradient(#0f0f10 0% 25%, #0a0a0b 0% 50%) 50%/20px 20px;
+    position:relative; overflow:hidden; border-right:1px solid var(--line);
   }
   .stage.drag::after{
     content:'drop image'; position:absolute; inset:0;
     display:flex; align-items:center; justify-content:center;
     background:rgba(201,67,46,0.08); color:var(--safelight);
-    border:1px dashed var(--safelight); letter-spacing:0.1em; font-size:12px;
-    pointer-events:none;
+    border:1px dashed var(--safelight); letter-spacing:0.1em; font-size:12px; z-index:10;
   }
   .stage canvas{
-    max-width:92%; max-height:92%; box-shadow:0 20px 60px rgba(0,0,0,0.6);
-    object-fit: contain;
+    max-width:96%; max-height:96%; box-shadow:0 20px 60px rgba(0,0,0,0.8);
+    object-fit: contain; cursor: crosshair;
   }
-  .stage .empty{
-    color:var(--dim); text-align:center; font-size:12px; line-height:1.8;
+  .stage .empty{ color:var(--dim); text-align:center; font-size:12px; line-height:1.8; }
+  
+  .loader {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    background: var(--safelight); color: #150705; padding: 4px 12px; font-weight: bold;
+    font-size: 11px; text-transform: uppercase; opacity: 0; transition: opacity 0.2s; pointer-events: none;
+    box-shadow: 2px 2px 0 var(--text); z-index: 20;
   }
-  .stage .empty label{
-    display:inline-block; margin-top:10px; padding:8px 16px;
-    border:1px solid var(--line); color:var(--text); cursor:pointer;
-  }
-  .stage .empty label:hover{ border-color:var(--safelight); color:var(--safelight); }
+  .loader.active { opacity: 1; }
 
   aside{
-    width:320px; flex-shrink:0; background:var(--panel);
+    width:340px; flex-shrink:0; background:var(--panel);
     display:flex; flex-direction:column; overflow-y:auto;
   }
+  
+  .collapsible-panel { display: flex; flex-direction: column; }
   .group{ padding:16px 20px; border-bottom:1px solid var(--line); }
-  .group h3{
-    margin:0 0 12px; font-size:10px; letter-spacing:0.12em; color:var(--dim);
-    text-transform:uppercase; font-weight:400;
+  .group h3{ margin:0 0 16px; font-size:11px; letter-spacing:0.12em; color:var(--dim); text-transform:uppercase; font-weight:400; display:flex; justify-content:space-between;}
+  
+  select.preset-select {
+    width: 100%; background: var(--bg); color: var(--text); border: 1px solid var(--line);
+    padding: 8px; font-family: var(--mono); font-size: 11px; outline: none; margin-bottom: 10px;
   }
-  .row{ margin-bottom:14px; }
-  .row:last-child{ margin-bottom:0; }
-  .row .label{
-    display:flex; justify-content:space-between; margin-bottom:10px;
-    font-size:11px; color:var(--text);
-  }
-  .row .label .val{ color:var(--safelight); font-variant-numeric:tabular-nums; }
 
-  /* Mobile-friendly Sliders */
+  .row{ margin-bottom:20px; position: relative; }
+  .row:last-child{ margin-bottom:0; }
+  .row .label{ display:flex; justify-content:space-between; margin-bottom:8px; font-size:11px; color:var(--text); }
+  .row .label .val{ 
+    color:var(--bg); background: var(--safelight); padding: 2px 6px; font-weight: bold;
+    font-variant-numeric:tabular-nums; border-radius: 3px; transition: transform 0.1s;
+  }
+  .row.active .label .val { transform: scale(1.2) translateY(-2px); box-shadow: 0 4px 10px rgba(201,67,46,0.4); }
+
+  /* Advanced Mobile-friendly Sliders */
   input[type=range]{
-    -webkit-appearance:none; width:100%; height:8px; background:var(--line);
-    border-radius: 4px; outline:none; margin:0;
-    touch-action: none; /* Prevents page scroll when sliding on mobile */
+    -webkit-appearance:none; width:100%; height:10px; background:var(--line);
+    border-radius: 5px; outline:none; margin:0; touch-action: none; 
   }
   input[type=range]::-webkit-slider-thumb{
-    -webkit-appearance:none; width:22px; height:22px; border-radius:50%;
-    background:var(--text); cursor:pointer; margin-top:-7px;
-    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight);
+    -webkit-appearance:none; width:28px; height:28px; border-radius:50%;
+    background:var(--text); cursor:pointer; margin-top:-9px;
+    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
   }
   input[type=range]::-moz-range-thumb{
-    width:14px; height:14px; border-radius:50%;
+    width:20px; height:20px; border-radius:50%;
     background:var(--text); cursor:pointer;
-    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight);
+    border:4px solid var(--panel); box-shadow:0 0 0 2px var(--safelight); transition: transform 0.1s;
   }
   input[type=range]:active::-webkit-slider-thumb{ background:var(--safelight); transform: scale(1.15); }
+  input[type=range]:active::-moz-range-thumb{ background:var(--safelight); transform: scale(1.15); }
 
-  .btnrow{ display:flex; gap:8px; }
-  button{
-    font-family:var(--mono); font-size:11px; background:transparent;
-    color:var(--text); border:1px solid var(--line); padding:12px; /* larger tap target */
-    cursor:pointer; flex:1; letter-spacing:0.03em;
-  }
-  button:hover{ border-color:var(--safelight); color:var(--safelight); }
-  button.primary{ background:var(--safelight); border-color:var(--safelight); color:#150705; font-weight:bold; }
-  button.primary:hover{ background:#e0522f; color:#150705; }
-
-  .hist{ height:44px; display:flex; align-items:flex-end; gap:1px; margin-top:14px; }
-  .hist div{ flex:1; background:var(--line); }
+  .tools-row { display: flex; gap: 10px; margin-bottom: 15px; }
+  
+  .hist{ height:50px; display:flex; align-items:flex-end; gap:1px; margin-top:14px; background: rgba(0,0,0,0.2); padding: 4px; border: 1px solid var(--line); }
+  .hist div{ flex:1; background:var(--dim); transition: height 0.1s ease-out; }
 
   #file-input{ display:none; }
-  footer{ padding:10px 20px; border-top:1px solid var(--line); font-size:10px; color:var(--dim); text-align:center; }
-  a{ color:var(--dim); }
-  a:hover{ color:var(--safelight); }
 
   /* Pixel Art Modal Overlay */
   .modal-overlay {
-    position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-    background: rgba(11, 11, 12, 0.85);
+    position: fixed; inset: 0; background: rgba(11, 11, 12, 0.85);
     display: none; justify-content: center; align-items: center;
-    z-index: 100; backdrop-filter: blur(4px);
-    padding: 20px;
+    z-index: 100; backdrop-filter: blur(4px); padding: 20px;
   }
   .modal-overlay.active { display: flex; }
-  
   .modal-content {
-    background: var(--panel);
-    border: 4px solid var(--safelight);
-    box-shadow: 8px 8px 0 rgba(201, 67, 46, 0.3);
-    max-width: 500px; width: 100%;
-    padding: 24px; position: relative;
-    max-height: 90vh; overflow-y: auto;
+    background: var(--panel); border: 4px solid var(--safelight);
+    box-shadow: 8px 8px 0 rgba(201, 67, 46, 0.3); max-width: 500px; width: 100%;
+    padding: 24px; position: relative; max-height: 90vh; overflow-y: auto;
   }
-  .modal-content h2 {
-    margin-top: 0; color: var(--safelight);
-    text-transform: uppercase; letter-spacing: 0.1em;
-    border-bottom: 2px dashed var(--line); padding-bottom: 10px;
-  }
-  .modal-content p { line-height: 1.6; font-size: 12px; color: var(--text); }
+  .modal-content h2 { margin-top: 0; color: var(--safelight); text-transform: uppercase; letter-spacing: 0.1em; border-bottom: 2px dashed var(--line); padding-bottom: 10px; font-size:14px; }
+  .modal-content p, .modal-content li { font-size: 12px; line-height: 1.6; color: var(--text); }
   .modal-content ul { padding-left: 20px; }
-  .modal-content li { margin-bottom: 12px; font-size: 11px; line-height: 1.5; color: var(--dim); }
-  .modal-content li strong { color: var(--text); }
-  
-  .close-btn {
-    position: absolute; top: 16px; right: 16px;
-    background: transparent; color: var(--safelight);
-    border: 2px solid var(--safelight); width: 30px; height: 30px;
-    font-weight: bold; cursor: pointer; display: flex;
-    align-items: center; justify-content: center; padding: 0;
-    box-shadow: 2px 2px 0 var(--line); transition: transform 0.1s;
-  }
-  .close-btn:active { transform: translate(2px, 2px); box-shadow: 0 0 0; }
+  .modal-content strong { color: var(--safelight); }
 
   /* Mobile Responsiveness */
   @media (max-width: 768px) {
-    main { flex-direction: column; overflow-y: auto; }
+    main { flex-direction: column; overflow-y: auto; display: block; }
     aside { width: 100%; flex-shrink: 0; border-left: none; }
-    .stage { min-height: 45vh; flex: none; border-right: none; border-bottom: 1px solid var(--line); }
-    .stage canvas { max-width: 95%; max-height: 95%; }
+    .stage { height: 50vh; min-height: 300px; flex: none; border-right: none; border-bottom: 1px solid var(--line); }
   }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> physical film grain simulator</div>
-  <div class="meta">
-    <span id="dims-readout">no image loaded</span>
-    <button class="help-btn" id="open-help">?</button>
+  <div class="logo">grain<span>//</span> pro</div>
+  <div class="header-actions">
+    <label for="file-input" class="pixel-btn">Load Image</label>
+    <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
+    <button class="pixel-btn icon" id="open-help" title="Help">?</button>
   </div>
 </header>
 
 <main>
   <div class="stage" id="stage">
-    <div class="empty" id="empty-state">
-      drag an image here, or<br>
-      <label for="file-input">choose file</label>
-    </div>
+    <div class="loader" id="loader">Processing...</div>
+    <div class="empty" id="empty-state">drag an image here</div>
     <canvas id="canvas" style="display:none"></canvas>
     <input type="file" id="file-input" accept="image/*">
   </div>
 
-  <aside>
+  <aside id="controls">
     <div class="group">
-      <h3>Grain</h3>
+      <h3>Presets</h3>
+      <select class="preset-select" id="preset-sel">
+        <option value="custom">Custom...</option>
+        <option value="35mm">Standard 35mm</option>
+        <option value="kodak200">Kodak Gold 200 (Fine)</option>
+        <option value="hp5">Ilford HP5 Plus 400 (B&W)</option>
+        <option value="portra800">Portra 800 (Color Chunky)</option>
+        <option value="heavy">Push Process (Heavy Grain)</option>
+      </select>
+      <div class="tools-row">
+        <button id="reseed" class="pixel-btn" style="flex:1">Reseed</button>
+        <button id="reset" class="pixel-btn" style="flex:1">Reset</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Grain Engine</h3>
       <div class="row">
-        <div class="label"><span>intensity</span><span class="val" id="v-intensity">28</span></div>
+        <div class="label"><span>Intensity</span><span class="val" id="v-intensity">28</span></div>
         <input type="range" id="intensity" min="0" max="100" value="28">
       </div>
       <div class="row">
-        <div class="label"><span>size (ISO proxy)</span><span class="val" id="v-size">1.6</span></div>
+        <div class="label"><span>Size (ISO)</span><span class="val" id="v-size">1.6</span></div>
         <input type="range" id="size" min="5" max="50" value="16">
       </div>
       <div class="row">
-        <div class="label"><span>clumping</span><span class="val" id="v-clump">55</span></div>
+        <div class="label"><span>Clumping</span><span class="val" id="v-clump">55</span></div>
         <input type="range" id="clump" min="0" max="100" value="55">
       </div>
     </div>
 
     <div class="group">
-      <h3>Distribution</h3>
+      <h3>Luminance & Color</h3>
       <div class="row">
-        <div class="label"><span>shadow bias</span><span class="val" id="v-bias">0.60</span></div>
+        <div class="label"><span>Shadow Bias</span><span class="val" id="v-bias">0.60</span></div>
         <input type="range" id="bias" min="20" max="150" value="60">
       </div>
       <div class="row">
-        <div class="label"><span>channel independence</span><span class="val" id="v-chan">70</span></div>
+        <div class="label"><span>Color Independence</span><span class="val" id="v-chan">70</span></div>
         <input type="range" id="chan" min="0" max="100" value="70">
       </div>
     </div>
 
     <div class="group">
-      <h3>Seed</h3>
-      <div class="btnrow">
-        <button id="reseed">reseed</button>
-        <button id="download" class="primary">download PNG</button>
-      </div>
+      <h3>Output <span id="dims-readout" style="color:var(--dim); font-size:9px;"></span></h3>
+      <button id="download" class="pixel-btn primary" style="width:100%">Download PNG</button>
       <div class="hist" id="hist"></div>
     </div>
   </aside>
 </main>
 
-<footer>
-  processing runs client-side, nothing uploaded · <a href="https://github.com/" target="_blank">source on GitHub</a>
-</footer>
-
-<!-- Modale Help in stile Pixel Art -->
 <div class="modal-overlay" id="help-modal">
   <div class="modal-content">
-    <button class="close-btn" id="close-help">X</button>
-    <h2>Come funziona</h2>
-    <p>Questo strumento simula la grana fisica della pellicola elaborando tutto in locale sul tuo browser. Regola gli slider per ottenere l'effetto desiderato:</p>
+    <button class="pixel-btn icon" id="close-help" style="position:absolute; top:16px; right:16px;">X</button>
+    <h2>Grain// Pro - Manuale</h2>
+    <p>Simulazione fisica della pellicola, eseguita 100% in locale.</p>
     <ul>
-      <li><strong>Intensity:</strong> Controlla la forza complessiva dell'effetto grana.</li>
-      <li><strong>Size (ISO Proxy):</strong> Modifica la scala spaziale del rumore. Usa valori più alti per simulare pellicole ad alta sensibilità (es. 400 ISO o superiore).</li>
-      <li><strong>Clumping:</strong> Regola la mappa di densità che modula localmente l'intensità del rumore, producendo aggregazione in cluster naturali al posto del classico rumore digitale isotropo.</li>
-      <li><strong>Shadow Bias:</strong> Pesa l'intensità della grana in base alla luminanza del pixel. Un valore basso sposterà il picco della grana visibile verso le zone in ombra.</li>
-      <li><strong>Channel Independence:</strong> Passa da una grana monocromatica (valore 0) a tre campi di rumore indipendenti (valore 100) per i canali Rosso, Verde e Blu, imitando il comportamento degli strati chimici delle pellicole a colori.</li>
+      <li><strong>Intensity:</strong> Quantità totale di grana. Modificando solo questo, il rendering è istantaneo (Cache attiva).</li>
+      <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Più alto = pellicola più sensibile. <em>Ricalcola il blur.</em></li>
+      <li><strong>Clumping:</strong> Aggregazione. Basso = rumore digitale. Alto = grumi chimici realistici. <em>Ricalcola il blur.</em></li>
+      <li><strong>Shadow Bias:</strong> Valori bassi concentrano la grana nelle ombre. Valori alti la rendono uniforme. (Cache attiva).</li>
+      <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
     </ul>
+    <p><strong>Novità Pro:</strong> Usa il tasto <strong>◐</strong> per lo split screen Before/After. Le prestazioni sono state ottimizzate calcolando il box blur solo quando strettamente necessario, sfruttando la memoria per le variazioni di intensità.</p>
   </div>
 </div>
 
 <script>
 "use strict";
 
-/* ---------- UI logic ---------- */
-document.getElementById('open-help').addEventListener('click', () => {
-  document.getElementById('help-modal').classList.add('active');
-});
-document.getElementById('close-help').addEventListener('click', () => {
-  document.getElementById('help-modal').classList.remove('active');
-});
-document.getElementById('help-modal').addEventListener('click', (e) => {
-  if (e.target === document.getElementById('help-modal')) {
-    document.getElementById('help-modal').classList.remove('active');
-  }
-});
+/* ---------- Modal & UI ---------- */
+const modal = document.getElementById('help-modal');
+document.getElementById('open-help').addEventListener('click', () => modal.classList.add('active'));
+document.getElementById('close-help').addEventListener('click', () => modal.classList.remove('active'));
+modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.remove('active'); });
 
-/* ---------- noise generation ---------- */
-
-// Box-Muller gaussian generator, cached second value
-let bmCache = null;
-function gaussian(){
-  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
-  let u=0,v=0;
-  while(u===0) u = Math.random();
-  while(v===0) v = Math.random();
-  const mag = Math.sqrt(-2.0*Math.log(u));
-  bmCache = mag*Math.sin(2.0*Math.PI*v);
-  return mag*Math.cos(2.0*Math.PI*v);
-}
-
-function makeNoiseField(w,h){
-  const f = new Float32Array(w*h);
-  for (let i=0;i<f.length;i++) f[i] = gaussian();
-  return f;
-}
-
-// separable box blur, 3 passes ~= gaussian. Operates in place on a copy.
-function boxBlur(src,w,h,radius){
-  if (radius < 0.5) return src.slice();
-  let a = src.slice();
-  let b = new Float32Array(w*h);
-  const r = Math.max(1, Math.round(radius));
-  for (let pass=0; pass<3; pass++){
-    // horizontal
-    for (let y=0;y<h;y++){
-      let acc=0; const row=y*w;
-      for (let x=-r;x<=r;x++) acc += a[row + clampI(x,0,w-1)];
-      for (let x=0;x<w;x++){
-        b[row+x] = acc/(2*r+1);
-        acc -= a[row + clampI(x-r,0,w-1)];
-        acc += a[row + clampI(x+r+1,0,w-1)];
-      }
-    }
-    // vertical
-    for (let x=0;x<w;x++){
-      let acc=0;
-      for (let y=-r;y<=r;y++) acc += b[clampI(y,0,h-1)*w+x];
-      for (let y=0;y<h;y++){
-        a[y*w+x] = acc/(2*r+1);
-        acc -= b[clampI(y-r,0,h-1)*w+x];
-        acc += b[clampI(y+r+1,0,h-1)*w+x];
-      }
-    }
-  }
-  return a;
-}
-function clampI(v,lo,hi){ return v<lo?lo:(v>hi?hi:v); }
-
-// low-res coarse density field, upscaled with bilinear -> drives clumping
-function makeClumpMask(w,h,strength){
-  if (strength <= 0.001) return null;
-  const cw = Math.max(2, Math.round(w/28));
-  const ch = Math.max(2, Math.round(h/28));
-  let coarse = makeNoiseField(cw,ch);
-  coarse = boxBlur(coarse, cw, ch, 1.2); 
-  const mask = new Float32Array(w*h);
-  for (let y=0;y<h;y++){
-    const fy = (y/(h-1))*(ch-1);
-    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
-    for (let x=0;x<w;x++){
-      const fx = (x/(w-1))*(cw-1);
-      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
-      const c00=coarse[y0*cw+x0], c10=coarse[y0*cw+x1];
-      const c01=coarse[y1*cw+x0], c11=coarse[y1*cw+x1];
-      const top = c00 + (c10-c00)*tx;
-      const bot = c01 + (c11-c01)*tx;
-      let v = top + (bot-top)*ty;           
-      v = 1 + v*strength*0.9;               
-      mask[y*w+x] = Math.max(0.15, v);
-    }
-  }
-  return mask;
-}
-
-/* ---------- state ---------- */
-let img = null;
-let seedFields = null; 
-
-const els = {};
-["intensity","size","clump","bias","chan"].forEach(id => els[id] = document.getElementById(id));
-const vEls = {
-  intensity: document.getElementById("v-intensity"),
-  size: document.getElementById("v-size"),
-  clump: document.getElementById("v-clump"),
-  bias: document.getElementById("v-bias"),
-  chan: document.getElementById("v-chan"),
+/* ---------- Presets ---------- */
+const presets = {
+  custom: null,
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30 }
 };
+
+/* ---------- State & Elements ---------- */
+const els = {
+  intensity: document.getElementById("intensity"),
+  size: document.getElementById("size"),
+  clump: document.getElementById("clump"),
+  bias: document.getElementById("bias"),
+  chan: document.getElementById("chan")
+};
+const vEls = {};
+for(let k in els) vEls[k] = document.getElementById("v-" + k);
+
+let img = null;
+let currentObjectUrl = null;
+let srcImageData = null;
+let isSplitScreen = false;
+
+// Caching objects to prevent useless heavy box blur recalculations
+let cachedNoiseFields = null; 
+let lastBlurParams = { size: -1, clump: -1, chan: -1, w: -1, h: -1, seedId: 0 };
+let currentSeedId = 1;
+
+const canvas = document.getElementById("canvas");
+const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const loader = document.getElementById("loader");
+
+// Pre-create histogram divs
+const histHost = document.getElementById("hist");
+const histDivs = [];
+for(let i=0; i<24; i++){
+  let d = document.createElement("div");
+  histHost.appendChild(d);
+  histDivs.push(d);
+}
 
 function readParams(){
   return {
@@ -392,123 +308,250 @@ function updateReadout(){
   vEls.chan.textContent = Math.round(p.chan*100);
 }
 
-/* ---------- core render ---------- */
-const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d", { willReadFrequently:true });
-let srcImageData = null;
+/* ---------- Noise Math ---------- */
+let bmCache = null;
+function gaussian(){
+  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
+  let u=0,v=0;
+  while(u===0) u = Math.random(); while(v===0) v = Math.random();
+  const mag = Math.sqrt(-2.0*Math.log(u));
+  bmCache = mag*Math.sin(2.0*Math.PI*v);
+  return mag*Math.cos(2.0*Math.PI*v);
+}
+function makeNoiseField(w,h){
+  const f = new Float32Array(w*h);
+  for (let i=0;i<f.length;i++) f[i] = gaussian();
+  return f;
+}
+function boxBlur(src,w,h,radius){
+  if (radius < 0.5) return src.slice();
+  let a = src.slice(), b = new Float32Array(w*h);
+  const r = Math.max(1, Math.round(radius));
+  for (let pass=0; pass<3; pass++){
+    for (let y=0;y<h;y++){
+      let acc=0; const row=y*w;
+      for (let x=-r;x<=r;x++) acc += a[row + (x<0?0:(x>=w?w-1:x))];
+      for (let x=0;x<w;x++){
+        b[row+x] = acc/(2*r+1);
+        acc -= a[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
+        acc += a[row + (x+r+1<0?0:(x+r+1>=w?w-1:x+r+1))];
+      }
+    }
+    for (let x=0;x<w;x++){
+      let acc=0;
+      for (let y=-r;y<=r;y++) acc += b[(y<0?0:(y>=h?h-1:y))*w+x];
+      for (let y=0;y<h;y++){
+        a[y*w+x] = acc/(2*r+1);
+        acc -= b[(y-r<0?0:(y-r>=h?h-1:y-r))*w+x];
+        acc += b[(y+r+1<0?0:(y+r+1>=h?h-1:y+r+1))*w+x];
+      }
+    }
+  }
+  return a;
+}
+function makeClumpMask(w,h,strength){
+  if (strength <= 0.001) return null;
+  const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
+  let coarse = boxBlur(makeNoiseField(cw,ch), cw, ch, 1.2); 
+  const mask = new Float32Array(w*h);
+  for (let y=0;y<h;y++){
+    const fy = (y/(h-1))*(ch-1);
+    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
+    for (let x=0;x<w;x++){
+      const fx = (x/(w-1))*(cw-1);
+      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
+      const top = coarse[y0*cw+x0] + (coarse[y0*cw+x1]-coarse[y0*cw+x0])*tx;
+      const bot = coarse[y1*cw+x0] + (coarse[y1*cw+x1]-coarse[y1*cw+x0])*tx;
+      mask[y*w+x] = Math.max(0.15, 1 + (top + (bot-top)*ty)*strength*0.9);
+    }
+  }
+  return mask;
+}
+function clamp8(v){ return v<0?0:(v>255?255:v|0); }
 
-const MAX_DIM = 2200; 
+/* ---------- Core Pipeline ---------- */
 
 function loadImage(file){
-  const url = URL.createObjectURL(file);
+  if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl); // Fix memory leak
+  currentObjectUrl = URL.createObjectURL(file);
   const image = new Image();
   image.onload = () => {
-    img = image;
     let w = image.width, h = image.height;
+    const MAX_DIM = 2200;
     const scale = Math.min(1, MAX_DIM / Math.max(w,h));
     w = Math.round(w*scale); h = Math.round(h*scale);
     canvas.width = w; canvas.height = h;
     ctx.drawImage(image, 0, 0, w, h);
     srcImageData = ctx.getImageData(0,0,w,h);
+    
     document.getElementById("empty-state").style.display = "none";
     canvas.style.display = "block";
-    document.getElementById("dims-readout").textContent = `${w}×${h}px`;
-    reseed();
+    document.getElementById("dims-readout").textContent = `(${w}×${h}px)`;
+    
+    lastBlurParams.w = -1; // force recalc
+    requestRender(true);
   };
-  image.src = url;
+  image.src = currentObjectUrl;
 }
 
-function reseed(){
-  if (!srcImageData) return;
-  const w = canvas.width, h = canvas.height;
-  seedFields = {
-    r: makeNoiseField(w,h),
-    g: makeNoiseField(w,h),
-    b: makeNoiseField(w,h),
-  };
-  render();
+// Request Render with Loading indicator & Debounce
+let renderTimer = null;
+function requestRender(forceHeavy = false){
+  if(!srcImageData) return;
+  loader.classList.add('active');
+  clearTimeout(renderTimer);
+  renderTimer = setTimeout(() => {
+    executeRender(forceHeavy);
+  }, 30); // small delay to allow UI to show loader
 }
 
-let renderTimer;
-function render(){
-  if (!srcImageData || !seedFields) return;
+function executeRender(forceHeavy){
   const p = readParams();
   const w = canvas.width, h = canvas.height;
+  
+  // Check if we need to regenerate the heavy blur/noise
+  const needsBlur = forceHeavy || 
+                    lastBlurParams.w !== w || lastBlurParams.h !== h ||
+                    lastBlurParams.size !== p.size || 
+                    lastBlurParams.clump !== p.clump || 
+                    lastBlurParams.seedId !== currentSeedId;
 
-  const blurRadius = p.size;
-  const rN = boxBlur(seedFields.r, w, h, blurRadius);
-  const gN = boxBlur(seedFields.g, w, h, blurRadius);
-  const bN = boxBlur(seedFields.b, w, h, blurRadius);
+  if (needsBlur) {
+    const rRaw = makeNoiseField(w,h);
+    const gRaw = makeNoiseField(w,h);
+    const bRaw = makeNoiseField(w,h);
+    
+    const rN = boxBlur(rRaw, w, h, p.size);
+    const gN = boxBlur(gRaw, w, h, p.size);
+    const bN = boxBlur(bRaw, w, h, p.size);
+    
+    const monoN = new Float32Array(w*h);
+    for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
+    
+    cachedNoiseFields = { r: rN, g: gN, b: bN, mono: monoN, mask: makeClumpMask(w,h,p.clump) };
+    
+    lastBlurParams = { size: p.size, clump: p.clump, chan: p.chan, w, h, seedId: currentSeedId };
+  }
 
-  const monoN = new Float32Array(w*h);
-  for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
-
-  const clumpMask = makeClumpMask(w,h,p.clump);
-
+  // Fast apply phase (only loops pixels once without blurring)
   const out = ctx.createImageData(w,h);
   const src = srcImageData.data;
-  const amp = p.intensity * 0.9; 
+  const amp = p.intensity * 0.9;
+  const cfM = cachedNoiseFields.mask;
+  const halfW = w / 2;
+
+  // Histogram calculation vars
+  const bins = new Array(24).fill(0);
+  const histStep = Math.max(1, Math.floor((w*h)/20000));
+  let maxCount = 1;
 
   for (let i=0, px=0; px < w*h; px++, i+=4){
     const r0 = src[i], g0 = src[i+1], b0 = src[i+2];
-    const lum = (r0+g0+b0) / (3*255);
+    
+    // Split screen logic
+    if(isSplitScreen && (px % w) < halfW) {
+      out.data[i] = r0; out.data[i+1] = g0; out.data[i+2] = b0; out.data[i+3] = src[i+3];
+      continue;
+    }
 
+    const lum = (r0+g0+b0) / (3*255);
     const l = Math.pow(lum, p.bias);
     const weight = 4 * l * (1 - l);
+    const cf = cfM ? cfM[px] : 1;
 
-    const cf = clumpMask ? clumpMask[px] : 1;
-
-    const nr = (monoN[px]*(1-p.chan) + rN[px]*p.chan) * weight * cf * amp;
-    const ng = (monoN[px]*(1-p.chan) + gN[px]*p.chan) * weight * cf * amp;
-    const nb = (monoN[px]*(1-p.chan) + bN[px]*p.chan) * weight * cf * amp;
+    const nr = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.r[px]*p.chan) * weight * cf * amp;
+    const ng = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.g[px]*p.chan) * weight * cf * amp;
+    const nb = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.b[px]*p.chan) * weight * cf * amp;
 
     out.data[i]   = clamp8(r0 + nr);
     out.data[i+1] = clamp8(g0 + ng);
     out.data[i+2] = clamp8(b0 + nb);
     out.data[i+3] = src[i+3];
+
+    // Build histogram data fast
+    if (px % histStep === 0 && (!isSplitScreen || (px % w) >= halfW)) {
+      const outLum = (out.data[i]+out.data[i+1]+out.data[i+2])/3;
+      const bin = Math.min(23, Math.floor(outLum/256*24));
+      bins[bin]++;
+      if(bins[bin] > maxCount) maxCount = bins[bin];
+    }
   }
+
+  // Draw Before/After line
+  if (isSplitScreen) {
+    for (let y=0; y<h; y++) {
+      let idx = (y*w + Math.floor(halfW)) * 4;
+      out.data[idx] = 201; out.data[idx+1] = 67; out.data[idx+2] = 46; // Safelight color line
+    }
+  }
+
   ctx.putImageData(out,0,0);
-  drawHistogram(out.data, w, h);
-}
-function clamp8(v){ return v<0?0:(v>255?255:v|0); }
-
-function drawHistogram(data,w,h){
-  const bins = new Array(24).fill(0);
-  const step = Math.max(1, Math.floor((w*h)/20000)); 
-  let maxCount = 1;
-  for (let px=0; px<w*h; px+=step){
-    const i = px*4;
-    const lum = (data[i]+data[i+1]+data[i+2])/3;
-    const bin = Math.min(23, Math.floor(lum/256*24));
-    bins[bin]++;
+  
+  // Update Histogram DOM efficiently
+  for(let i=0; i<24; i++){
+    histDivs[i].style.height = Math.max(2, (bins[i]/maxCount)*50) + "px";
   }
-  bins.forEach(c => { if(c>maxCount) maxCount=c; });
-  const host = document.getElementById("hist");
-  host.innerHTML = "";
-  bins.forEach(c => {
-    const d = document.createElement("div");
-    d.style.height = Math.max(2, (c/maxCount)*44) + "px";
-    host.appendChild(d);
-  });
+
+  requestAnimationFrame(() => { loader.classList.remove('active'); });
 }
 
-/* ---------- wiring ---------- */
-["intensity","size","clump","bias","chan"].forEach(id => {
-  els[id].addEventListener("input", () => {
+/* ---------- Wiring ---------- */
+
+// Input listeners
+for(let key in els){
+  els[key].addEventListener("input", (e) => {
     updateReadout();
-    // Debounce render to improve sliding performance on heavy mobile devices
-    clearTimeout(renderTimer);
-    renderTimer = setTimeout(render, 15);
+    // Highlight the row being adjusted
+    e.target.parentElement.classList.add("active");
+    // If it's a heavy param, tell requestRender to force recalculate
+    const isHeavy = (key === 'size' || key === 'clump');
+    requestRender(isHeavy);
   });
+  els[key].addEventListener("change", (e) => { e.target.parentElement.classList.remove("active"); });
+  // Mobile fallback for active state removal
+  els[key].addEventListener("touchend", (e) => { e.target.parentElement.classList.remove("active"); });
+  els[key].addEventListener("mouseup", (e) => { e.target.parentElement.classList.remove("active"); });
+}
+
+document.getElementById("btn-split").addEventListener("click", function() {
+  isSplitScreen = !isSplitScreen;
+  this.style.background = isSplitScreen ? "var(--safelight)" : "transparent";
+  this.style.color = isSplitScreen ? "#150705" : "var(--text)";
+  requestRender(false);
 });
 
-document.getElementById("reseed").addEventListener("click", reseed);
+document.getElementById("preset-sel").addEventListener("change", (e) => {
+  const val = e.target.value;
+  if(presets[val]) {
+    const p = presets[val];
+    els.intensity.value = p.intensity;
+    els.size.value = p.size * 10;
+    els.clump.value = p.clump;
+    els.bias.value = p.bias * 100;
+    els.chan.value = p.chan;
+    updateReadout();
+    requestRender(true);
+  }
+});
+
+document.getElementById("reseed").addEventListener("click", () => { currentSeedId++; requestRender(true); });
+document.getElementById("reset").addEventListener("click", () => {
+  document.getElementById("preset-sel").value = "custom";
+  els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.chan.value = 70;
+  updateReadout(); requestRender(true);
+});
+
 document.getElementById("download").addEventListener("click", () => {
   if (!srcImageData) return;
+  const wasSplit = isSplitScreen;
+  if (wasSplit) { isSplitScreen = false; executeRender(false); } // Render full before save
+  
   const a = document.createElement("a");
-  a.download = "grain.png";
+  a.download = "grain-pro.png";
   a.href = canvas.toDataURL("image/png");
   a.click();
+  
+  if (wasSplit) { isSplitScreen = true; executeRender(false); }
 });
 
 const fileInput = document.getElementById("file-input");
@@ -517,10 +560,7 @@ fileInput.addEventListener("change", e => { if (e.target.files[0]) loadImage(e.t
 const stage = document.getElementById("stage");
 stage.addEventListener("dragover", e => { e.preventDefault(); stage.classList.add("drag"); });
 stage.addEventListener("dragleave", () => stage.classList.remove("drag"));
-stage.addEventListener("drop", e => {
-  e.preventDefault(); stage.classList.remove("drag");
-  if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]);
-});
+stage.addEventListener("drop", e => { e.preventDefault(); stage.classList.remove("drag"); if (e.dataTransfer.files[0]) loadImage(e.dataTransfer.files[0]); });
 
 updateReadout();
 </script>
