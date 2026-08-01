@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.1</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.2</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -302,6 +302,7 @@ let img = null;
 let currentObjectUrl = null;
 let srcImageData = null;
 let originalFileDimensions = { w: 0, h: 0 };
+let originalFileName = "grain-pro-max-quality";
 let isSplitScreen = false;
 
 // Zoom and Pan State (transform-based: canvas stays centered in .stage,
@@ -576,6 +577,7 @@ function clamp8(v){ return v<0?0:(v>255?255:v|0); }
 /* ---------- Core Pipeline ---------- */
 
 function loadImage(file){
+  originalFileName = (file.name || "grain-pro-max-quality").replace(/\.[^/.]+$/, "");
   if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
   const image = new Image();
@@ -768,7 +770,7 @@ document.getElementById("download").addEventListener("click", () => {
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.download = "grain-pro-max-quality.jpg";
+    a.download = originalFileName + ".jpg";
     a.href = url;
     document.body.appendChild(a);
     a.click();
