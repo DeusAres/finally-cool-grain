@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.0</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.1</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -382,10 +382,11 @@ function layoutStage(){
   }
   const vw = stage.clientWidth || window.innerWidth;
   const aspect = canvas.height / canvas.width;
-  const padding = 48; // room for zoom controls overlay + a little breathing space
-  let targetH = vw * aspect + padding;
-  const maxH = window.innerHeight * 0.55;
+  const headerH = document.querySelector('header').offsetHeight;
+  const minAside = 140; // min room left visible for controls panel
+  const maxH = window.innerHeight - headerH - minAside;
   const minH = window.innerHeight * 0.3;
+  let targetH = vw * aspect;
   targetH = Math.min(maxH, Math.max(minH, targetH));
   stage.style.height = targetH + 'px';
 }
@@ -394,7 +395,7 @@ function fitToScreen(){
   if (!canvas || canvas.style.display === 'none') return;
   layoutStage();
   const stageRect = stage.getBoundingClientRect();
-  const padding = 24;
+  const padding = 8;
   const availW = Math.max(1, stageRect.width - padding * 2);
   const availH = Math.max(1, stageRect.height - padding * 2);
   currentZoom = Math.min(availW / canvas.width, availH / canvas.height);
