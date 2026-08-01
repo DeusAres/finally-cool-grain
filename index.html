@@ -32,6 +32,7 @@
     flex-shrink:0; background: var(--panel);
   }
   header .logo{ font-size:13px; letter-spacing:0.02em; font-weight: bold; }
+  .version-tag{ font-size:9px; font-weight:400; color:var(--dim); letter-spacing:0.05em; margin-left:2px; }
   header .logo span{ color:var(--safelight); }
   
   .header-actions { display: flex; gap: 8px; align-items: center; }
@@ -166,15 +167,15 @@
   /* Mobile Responsiveness */
   @media (max-width: 768px) {
     main { flex-direction: column; }
-    aside { width: 100%; max-height: 40vh; flex-shrink: 0; border-left: none; border-top: 1px solid var(--line); }
-    .stage { flex: 1; height: auto; min-height: 250px; }
+    aside { width: 100%; flex: 1; min-height: 0; border-left: none; border-top: 1px solid var(--line); }
+    .stage { flex: 0 0 auto; width: 100%; min-height: 35vh; }
   }
 </style>
 </head>
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro</div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.0</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -316,6 +317,18 @@ let cachedNoiseFields = null;
 let lastBlurParams = { size: -1, clump: -1, chan: -1, w: -1, h: -1, seedId: 0 };
 let currentSeedId = 1;
 
+// Perf: LUT for Math.pow(lum,bias) (256 entries, recomputed only if bias changes)
+const powLUT = new Float32Array(256);
+let lastBiasLUT = null;
+function updatePowLUT(bias){
+  if (bias === lastBiasLUT) return;
+  for (let i=0;i<256;i++) powLUT[i] = Math.pow(i/255, bias);
+  lastBiasLUT = bias;
+}
+
+// Perf: reuse the output ImageData buffer instead of allocating a new one every frame
+let cachedOut = null, cachedOutW = -1, cachedOutH = -1;
+
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d", { willReadFrequently: true });
 const stage = document.getElementById("stage");
@@ -358,8 +371,28 @@ function applyTransform(){
 
 // Fit the whole image inside the visible stage area (accounts for current
 // stage size, so it always reflects the real available space, panels included)
+// On mobile (stacked layout), size the stage to the actual photo aspect
+// ratio instead of letting it fill all leftover flex space. This kills the
+// dead checkered padding around the image and frees up room for the
+// controls panel below, so it doesn't need to be squeezed/scrolled.
+function layoutStage(){
+  if (window.innerWidth > 768 || !canvas.width) {
+    stage.style.height = '';
+    return;
+  }
+  const vw = stage.clientWidth || window.innerWidth;
+  const aspect = canvas.height / canvas.width;
+  const padding = 48; // room for zoom controls overlay + a little breathing space
+  let targetH = vw * aspect + padding;
+  const maxH = window.innerHeight * 0.55;
+  const minH = window.innerHeight * 0.3;
+  targetH = Math.min(maxH, Math.max(minH, targetH));
+  stage.style.height = targetH + 'px';
+}
+
 function fitToScreen(){
   if (!canvas || canvas.style.display === 'none') return;
+  layoutStage();
   const stageRect = stage.getBoundingClientRect();
   const padding = 24;
   const availW = Math.max(1, stageRect.width - padding * 2);
@@ -609,11 +642,13 @@ function executeRender(forceHeavy){
     lastBlurParams = { size: p.size, clump: p.clump, chan: p.chan, w, h, seedId: currentSeedId };
   }
 
-  const out = ctx.createImageData(w,h);
+  const out = (cachedOutW === w && cachedOutH === h) ? cachedOut : (cachedOut = ctx.createImageData(w,h));
+  cachedOutW = w; cachedOutH = h;
   const src = srcImageData.data;
   const amp = p.intensity * 0.9;
   const cfM = cachedNoiseFields.mask;
   const halfW = w / 2;
+  updatePowLUT(p.bias);
 
   const bins = new Array(24).fill(0);
   const histStep = Math.max(1, Math.floor((w*h)/20000));
@@ -628,7 +663,7 @@ function executeRender(forceHeavy){
     }
 
     const lum = (r0+g0+b0) / (3*255);
-    const l = Math.pow(lum, p.bias);
+    const l = powLUT[(lum*255 + 0.5) | 0];
     const weight = 4 * l * (1 - l);
     const cf = cfM ? cfM[px] : 1;
 
