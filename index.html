@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.2</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.4</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -212,6 +212,9 @@
       <div class="tools-row">
         <button id="reseed" class="pixel-btn" style="flex:1">Reseed</button>
         <button id="reset" class="pixel-btn" style="flex:1">Reset</button>
+      </div>
+      <div class="tools-row">
+        <button id="save-local" class="pixel-btn" style="flex:1">Save Local</button>
       </div>
     </div>
 
@@ -323,7 +326,8 @@ const powLUT = new Float32Array(256);
 let lastBiasLUT = null;
 function updatePowLUT(bias){
   if (bias === lastBiasLUT) return;
-  for (let i=0;i<256;i++) powLUT[i] = Math.pow(i/255, bias);
+  const k = 1 / bias; // low bias -> high k -> steep falloff, grain concentrated in deep shadows only
+  for (let i=0;i<256;i++) powLUT[i] = Math.pow(1 - i/255, k);
   lastBiasLUT = bias;
 }
 
@@ -666,8 +670,7 @@ function executeRender(forceHeavy){
     }
 
     const lum = (r0+g0+b0) / (3*255);
-    const l = powLUT[(lum*255 + 0.5) | 0];
-    const weight = 4 * l * (1 - l);
+    const weight = powLUT[(lum*255 + 0.5) | 0];
     const cf = cfM ? cfM[px] : 1;
 
     const nr = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.r[px]*p.chan) * weight * cf * amp;
@@ -744,6 +747,28 @@ document.getElementById("reset").addEventListener("click", () => {
   els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.chan.value = 70;
   updateReadout(); requestRender(true);
 });
+
+/* ---------- Local Save/Load (localStorage) ---------- */
+const LS_KEY = "grainpro_custom_v1";
+document.getElementById("save-local").addEventListener("click", () => {
+  const data = {};
+  for (let key in els) data[key] = els[key].value;
+  localStorage.setItem(LS_KEY, JSON.stringify(data));
+  const btn = document.getElementById("save-local");
+  const old = btn.textContent;
+  btn.textContent = "Saved!";
+  setTimeout(() => { btn.textContent = old; }, 1000);
+});
+(function loadLocal(){
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (!raw) return;
+    const data = JSON.parse(raw);
+    for (let key in data) if (els[key]) els[key].value = data[key];
+    document.getElementById("preset-sel").value = "custom";
+    updateReadout();
+  } catch(e) {}
+})();
 
 /* ---------- True Max Quality JPG Download ---------- */
 document.getElementById("download").addEventListener("click", () => {
