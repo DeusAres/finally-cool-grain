@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v2.1</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.0</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -291,7 +291,15 @@ function makeNoiseField(w,h){
   for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
   return scratchRaw; // caller must consume (copy) before generating the next field
 }
+let scratchClumpRaw = null, scratchClumpRawSize = -1;
+function makeClumpNoiseField(w,h){
+  const n = w*h;
+  if (scratchClumpRawSize !== n) { scratchClumpRaw = new Float32Array(n); scratchClumpRawSize = n; }
+  for (let i=0;i<n;i++) scratchClumpRaw[i] = gaussian();
+  return scratchClumpRaw;
+}
 let scratchB = null, scratchBSize = -1;
+let scratchClumpB = null, scratchClumpBSize = -1;
 function grainBlur(src,w,h,radius){
   if (radius<=0) return src.slice();
   const r0 = Math.floor(radius), frac = radius-r0;
@@ -302,12 +310,18 @@ function grainBlur(src,w,h,radius){
   for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
   return out;
 }
-function boxBlur(src,w,h,radius){
+function boxBlur(src,w,h,radius,useClumpPool){
   if (radius < 0.5) return src.slice();
   let a = src.slice();
   const n = w*h;
-  if (scratchBSize !== n) { scratchB = new Float32Array(n); scratchBSize = n; }
-  const b = scratchB;
+  let b;
+  if (useClumpPool){
+    if (scratchClumpBSize !== n) { scratchClumpB = new Float32Array(n); scratchClumpBSize = n; }
+    b = scratchClumpB;
+  } else {
+    if (scratchBSize !== n) { scratchB = new Float32Array(n); scratchBSize = n; }
+    b = scratchB;
+  }
   const r = Math.max(1, Math.round(radius));
   for (let pass=0; pass<3; pass++){
     for (let y=0;y<h;y++){
@@ -334,7 +348,7 @@ function boxBlur(src,w,h,radius){
 function makeClumpMask(w,h,strength){
   if (strength <= 0.001) return null;
   const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
-  let coarse = boxBlur(makeNoiseField(cw,ch), cw, ch, 1.2);
+  let coarse = boxBlur(makeClumpNoiseField(cw,ch), cw, ch, 1.2, true);
   const mask = new Float32Array(w*h);
   for (let y=0;y<h;y++){
     const fy = (y/(h-1))*(ch-1);
@@ -363,7 +377,9 @@ function updatePowLUT(bias){
 /* ---------- Worker State ---------- */
 let W=0, H=0, srcData=null, blurredSrc=null;
 let cachedNoiseFields = null;
-let lastBlurParams = { size:-1, clump:-1, chan:-1, w:-1, h:-1, seedId:0 };
+let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
+let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
+let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
 
 self.onmessage = function(e){
   const msg = e.data;
@@ -379,7 +395,9 @@ self.onmessage = function(e){
       b: new Uint8ClampedArray(boxBlur(bC,W,H,1.5))
     };
     cachedNoiseFields = null;
-    lastBlurParams = { size:-1, clump:-1, chan:-1, w:-1, h:-1, seedId:0 };
+    cachedGrainDelta = null;
+    lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
+    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
     self.postMessage({cmd:'inited'});
     return;
   }
@@ -388,7 +406,9 @@ self.onmessage = function(e){
     const reqId = msg.reqId, p = msg.params, forceHeavy = msg.forceHeavy,
           seedId = msg.seedId, isSplitScreen = msg.isSplitScreen;
     const w = W, h = H;
+    const src = srcData;
 
+    // Stage A (heavy): regenerate grain noise fields. Only on size/clump/seed change.
     const needsBlur = forceHeavy ||
       lastBlurParams.w !== w || lastBlurParams.h !== h ||
       lastBlurParams.size !== p.size ||
@@ -402,19 +422,44 @@ self.onmessage = function(e){
       const monoN = new Float32Array(w*h);
       for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
       cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: makeClumpMask(w,h,p.clump) };
-      lastBlurParams = { size:p.size, clump:p.clump, chan:p.chan, w, h, seedId };
+      lastBlurParams = { size:p.size, clump:p.clump, w, h, seedId };
     }
 
+    // Stage B (medium): apply shadow-bias weight + channel mix -> grain delta,
+    // still independent of intensity. Recomputed on bias/chan change (or if A ran).
+    const needsCompose = needsBlur ||
+      lastComposeParams.bias !== p.bias || lastComposeParams.chan !== p.chan ||
+      lastComposeParams.w !== w || lastComposeParams.h !== h || lastComposeParams.seedId !== seedId;
+
+    if (needsCompose) {
+      updatePowLUT(p.bias);
+      const cfM = cachedNoiseFields.mask;
+      const monoA=cachedNoiseFields.mono, rA=cachedNoiseFields.r, gA=cachedNoiseFields.g, bA=cachedNoiseFields.b;
+      const chanAmt=p.chan, invChan=1-chanAmt;
+      const n = w*h;
+      const gR=new Float32Array(n), gG=new Float32Array(n), gB=new Float32Array(n);
+      for (let i=0,px=0; px<n; px++, i+=4){
+        const r0=src[i], g0=src[i+1], b0=src[i+2];
+        const lum=(r0+g0+b0)/(3*255);
+        const weight = powLUT[(lum*255+0.5)|0];
+        const cf = cfM ? cfM[px] : 1;
+        const wcf = weight*cf;
+        const m = monoA[px]*invChan;
+        gR[px] = (m+rA[px]*chanAmt)*wcf;
+        gG[px] = (m+gA[px]*chanAmt)*wcf;
+        gB[px] = (m+bA[px]*chanAmt)*wcf;
+      }
+      cachedGrainDelta = { r:gR, g:gG, b:gB };
+      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId };
+    }
+
+    // Stage C (cheap): intensity-driven softening blend + grain amplitude. Runs every render.
     const out = new Uint8ClampedArray(w*h*4);
-    const src = srcData;
-    const amp = p.intensity*0.9;
-    const cfM = cachedNoiseFields.mask;
-    const monoA=cachedNoiseFields.mono, rA=cachedNoiseFields.r, gA=cachedNoiseFields.g, bA=cachedNoiseFields.b;
     const brR=blurredSrc.r, brG=blurredSrc.g, brB=blurredSrc.b;
-    const halfW=w/2, intHalfW=Math.floor(halfW);
-    updatePowLUT(p.bias);
+    const gDR=cachedGrainDelta.r, gDG=cachedGrainDelta.g, gDB=cachedGrainDelta.b;
+    const amp = p.intensity*0.9;
     const blendAmt = Math.min(1,p.intensity/100)*0.22;
-    const chanAmt=p.chan, invChan=1-chanAmt;
+    const halfW=w/2, intHalfW=Math.floor(halfW);
 
     const bins = new Array(24).fill(0);
     const histStep = Math.max(1, Math.floor((w*h)/20000));
@@ -433,14 +478,9 @@ self.onmessage = function(e){
         g0 += (brG[px]-g0)*blendAmt;
         b0 += (brB[px]-b0)*blendAmt;
       }
-      const lum=(r0+g0+b0)/(3*255);
-      const weight = powLUT[(lum*255+0.5)|0];
-      const cf = cfM ? cfM[px] : 1;
-      const wcf = weight*cf*amp;
-      const m = monoA[px]*invChan;
-      out[i]   = clamp8(r0 + (m+rA[px]*chanAmt)*wcf);
-      out[i+1] = clamp8(g0 + (m+gA[px]*chanAmt)*wcf);
-      out[i+2] = clamp8(b0 + (m+bA[px]*chanAmt)*wcf);
+      out[i]   = clamp8(r0 + gDR[px]*amp);
+      out[i+1] = clamp8(g0 + gDG[px]*amp);
+      out[i+2] = clamp8(b0 + gDB[px]*amp);
       out[i+3] = src[i+3];
 
       if (px % histStep === 0 && (!isSplitScreen || col>=intHalfW)){
