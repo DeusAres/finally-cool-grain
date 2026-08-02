@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.5</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.7</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -226,7 +226,7 @@
       </div>
       <div class="row">
         <div class="label"><span>Size (ISO)</span><span class="val" id="v-size">1.6</span></div>
-        <input type="range" id="size" min="5" max="50" value="16">
+        <input type="range" id="size" min="0" max="50" value="16">
       </div>
       <div class="row">
         <div class="label"><span>Clumping</span><span class="val" id="v-clump">55</span></div>
@@ -301,7 +301,6 @@ const els = {
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
 
-let img = null;
 let currentObjectUrl = null;
 let srcImageData = null;
 let originalFileDimensions = { w: 0, h: 0 };
@@ -381,6 +380,7 @@ function applyTransform(){
 // ratio instead of letting it fill all leftover flex space. This kills the
 // dead checkered padding around the image and frees up room for the
 // controls panel below, so it doesn't need to be squeezed/scrolled.
+const headerEl = document.querySelector('header');
 function layoutStage(){
   if (window.innerWidth > 768 || !canvas.width) {
     stage.style.height = '';
@@ -388,7 +388,7 @@ function layoutStage(){
   }
   const vw = stage.clientWidth || window.innerWidth;
   const aspect = canvas.height / canvas.width;
-  const headerH = document.querySelector('header').offsetHeight;
+  const headerH = headerEl.offsetHeight;
   const minAside = 140; // min room left visible for controls panel
   const maxH = window.innerHeight - headerH - minAside;
   const minH = window.innerHeight * 0.3;
@@ -528,14 +528,30 @@ function gaussian(){
   bmCache = mag*Math.sin(2.0*Math.PI*v);
   return mag*Math.cos(2.0*Math.PI*v);
 }
+let scratchRaw = null, scratchRawSize = -1;
 function makeNoiseField(w,h){
-  const f = new Float32Array(w*h);
-  for (let i=0;i<f.length;i++) f[i] = gaussian();
-  return f;
+  const n = w*h;
+  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
+  for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
+  return scratchRaw; // caller must consume (copy) before generating the next field
+}
+let scratchB = null, scratchBSize = -1;
+function grainBlur(src,w,h,radius){
+  if (radius<=0) return src.slice();
+  const r0 = Math.floor(radius), frac = radius-r0;
+  const lo = r0<1 ? src.slice() : boxBlur(src,w,h,r0);
+  const hi = frac>0.05 ? boxBlur(src,w,h,r0+1) : lo;
+  const factor = Math.sqrt(1+radius) * 0.85; // restore contrast lost to averaging at high radius
+  const out = new Float32Array(w*h);
+  for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
+  return out;
 }
 function boxBlur(src,w,h,radius){
   if (radius < 0.5) return src.slice();
-  let a = src.slice(), b = new Float32Array(w*h);
+  let a = src.slice();
+  const n = w*h;
+  if (scratchBSize !== n) { scratchB = new Float32Array(n); scratchBSize = n; }
+  const b = scratchB;
   const r = Math.max(1, Math.round(radius));
   for (let pass=0; pass<3; pass++){
     for (let y=0;y<h;y++){
@@ -644,13 +660,9 @@ function executeRender(forceHeavy){
                     lastBlurParams.seedId !== currentSeedId;
 
   if (needsBlur) {
-    const rRaw = makeNoiseField(w,h);
-    const gRaw = makeNoiseField(w,h);
-    const bRaw = makeNoiseField(w,h);
-    
-    const rN = boxBlur(rRaw, w, h, p.size);
-    const gN = boxBlur(gRaw, w, h, p.size);
-    const bN = boxBlur(bRaw, w, h, p.size);
+    const rN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+    const gN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+    const bN = grainBlur(makeNoiseField(w,h), w, h, p.size);
     
     const monoN = new Float32Array(w*h);
     for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
@@ -750,9 +762,9 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
   if(presets[val]) {
     const p = presets[val];
     els.intensity.value = p.intensity;
-    els.size.value = p.size * 10;
+    els.size.value = p.size;
     els.clump.value = p.clump;
-    els.bias.value = p.bias * 100;
+    els.bias.value = p.bias;
     els.chan.value = p.chan;
     updateReadout();
     requestRender(true);
