@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v2.0</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v2.1</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -767,21 +767,43 @@ function drawWorkerResult(msg){
 }
 
 let renderTimer = null;
+let workerBusy = false;
+let pendingParams = null; // {p, forceHeavy} newest requested render, sent as soon as the worker frees up
+
+function sendToWorker(p, forceHeavy){
+  workerBusy = true;
+  latestLiveReqId = ++reqCounter;
+  const myReqId = latestLiveReqId;
+  pendingReqs.set(myReqId, (msg) => {
+    workerBusy = false;
+    if (myReqId === latestLiveReqId) drawWorkerResult(msg);
+    if (pendingParams) {
+      const next = pendingParams;
+      pendingParams = null;
+      sendToWorker(next.p, next.forceHeavy);
+    }
+  });
+  renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen });
+}
+
 function requestRender(forceHeavy = false){
   if(!hasImage) return;
   loader.classList.add('active');
   clearTimeout(renderTimer);
   renderTimer = setTimeout(() => {
     const p = readParams();
-    latestLiveReqId = ++reqCounter;
-    const myReqId = latestLiveReqId;
-    pendingReqs.set(myReqId, (msg) => {
-      if (myReqId !== latestLiveReqId) return; // superseded by a newer request, discard
-      drawWorkerResult(msg);
-    });
-    renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen });
+    if (workerBusy) {
+      // Worker is still crunching a previous request: don't pile up another
+      // job in its queue, just remember the latest params. As soon as it's
+      // free it jumps straight to this newest state, skipping every
+      // intermediate value from a fast drag.
+      pendingParams = { p, forceHeavy: forceHeavy || (pendingParams ? pendingParams.forceHeavy : false) };
+    } else {
+      sendToWorker(p, forceHeavy);
+    }
   }, 20);
 }
+
 
 /* ---------- Wiring ---------- */
 
