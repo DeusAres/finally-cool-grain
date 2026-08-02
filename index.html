@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.7</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.8</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -675,45 +675,49 @@ function executeRender(forceHeavy){
   const out = (cachedOutW === w && cachedOutH === h) ? cachedOut : (cachedOut = ctx.createImageData(w,h));
   cachedOutW = w; cachedOutH = h;
   const src = srcImageData.data;
+  const outData = out.data;
   const amp = p.intensity * 0.9;
   const cfM = cachedNoiseFields.mask;
-  const halfW = w / 2;
+  const monoA = cachedNoiseFields.mono, rA = cachedNoiseFields.r, gA = cachedNoiseFields.g, bA = cachedNoiseFields.b;
+  const brR = blurredSrc.r, brG = blurredSrc.g, brB = blurredSrc.b;
+  const halfW = w / 2, intHalfW = Math.floor(halfW);
   updatePowLUT(p.bias);
   const blendAmt = Math.min(1, p.intensity/100) * 0.22; // subtle softening, tied to intensity
+  const chanAmt = p.chan, invChan = 1 - chanAmt;
 
   const bins = new Array(24).fill(0);
   const histStep = Math.max(1, Math.floor((w*h)/20000));
   let maxCount = 1;
+  let col = 0;
 
-  for (let i=0, px=0; px < w*h; px++, i+=4){
+  for (let i=0, px=0; px < w*h; px++, i+=4, col++){
+    if (col === w) col = 0;
     let r0 = src[i], g0 = src[i+1], b0 = src[i+2];
-    
-    if(isSplitScreen && (px % w) < halfW) {
-      out.data[i] = r0; out.data[i+1] = g0; out.data[i+2] = b0; out.data[i+3] = src[i+3];
+
+    if (isSplitScreen && col < intHalfW) {
+      outData[i] = r0; outData[i+1] = g0; outData[i+2] = b0; outData[i+3] = src[i+3];
       continue;
     }
 
     if (blendAmt > 0) {
-      r0 += (blurredSrc.r[px]-r0)*blendAmt;
-      g0 += (blurredSrc.g[px]-g0)*blendAmt;
-      b0 += (blurredSrc.b[px]-b0)*blendAmt;
+      r0 += (brR[px]-r0)*blendAmt;
+      g0 += (brG[px]-g0)*blendAmt;
+      b0 += (brB[px]-b0)*blendAmt;
     }
 
     const lum = (r0+g0+b0) / (3*255);
     const weight = powLUT[(lum*255 + 0.5) | 0];
     const cf = cfM ? cfM[px] : 1;
+    const wcf = weight * cf * amp;
+    const m = monoA[px] * invChan;
 
-    const nr = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.r[px]*p.chan) * weight * cf * amp;
-    const ng = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.g[px]*p.chan) * weight * cf * amp;
-    const nb = (cachedNoiseFields.mono[px]*(1-p.chan) + cachedNoiseFields.b[px]*p.chan) * weight * cf * amp;
+    outData[i]   = clamp8(r0 + (m + rA[px]*chanAmt) * wcf);
+    outData[i+1] = clamp8(g0 + (m + gA[px]*chanAmt) * wcf);
+    outData[i+2] = clamp8(b0 + (m + bA[px]*chanAmt) * wcf);
+    outData[i+3] = src[i+3];
 
-    out.data[i]   = clamp8(r0 + nr);
-    out.data[i+1] = clamp8(g0 + ng);
-    out.data[i+2] = clamp8(b0 + nb);
-    out.data[i+3] = src[i+3];
-
-    if (px % histStep === 0 && (!isSplitScreen || (px % w) >= halfW)) {
-      const outLum = (out.data[i]+out.data[i+1]+out.data[i+2])/3;
+    if (px % histStep === 0 && (!isSplitScreen || col >= intHalfW)) {
+      const outLum = (outData[i]+outData[i+1]+outData[i+2])/3;
       const bin = Math.min(23, Math.floor(outLum/256*24));
       bins[bin]++;
       if(bins[bin] > maxCount) maxCount = bins[bin];
