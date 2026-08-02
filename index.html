@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v1.8</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v2.0</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -271,6 +271,198 @@
   </div>
 </div>
 
+<script type="text/plain" id="worker-src">
+"use strict";
+
+/* ---------- Noise Math (identical to prior single-thread version) ---------- */
+let bmCache = null;
+function gaussian(){
+  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
+  let u=0,v=0;
+  while(u===0) u = Math.random(); while(v===0) v = Math.random();
+  const mag = Math.sqrt(-2.0*Math.log(u));
+  bmCache = mag*Math.sin(2.0*Math.PI*v);
+  return mag*Math.cos(2.0*Math.PI*v);
+}
+let scratchRaw = null, scratchRawSize = -1;
+function makeNoiseField(w,h){
+  const n = w*h;
+  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
+  for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
+  return scratchRaw; // caller must consume (copy) before generating the next field
+}
+let scratchB = null, scratchBSize = -1;
+function grainBlur(src,w,h,radius){
+  if (radius<=0) return src.slice();
+  const r0 = Math.floor(radius), frac = radius-r0;
+  const lo = r0<1 ? src.slice() : boxBlur(src,w,h,r0);
+  const hi = frac>0.05 ? boxBlur(src,w,h,r0+1) : lo;
+  const factor = Math.sqrt(1+radius) * 0.85; // restore contrast lost to averaging at high radius
+  const out = new Float32Array(w*h);
+  for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
+  return out;
+}
+function boxBlur(src,w,h,radius){
+  if (radius < 0.5) return src.slice();
+  let a = src.slice();
+  const n = w*h;
+  if (scratchBSize !== n) { scratchB = new Float32Array(n); scratchBSize = n; }
+  const b = scratchB;
+  const r = Math.max(1, Math.round(radius));
+  for (let pass=0; pass<3; pass++){
+    for (let y=0;y<h;y++){
+      let acc=0; const row=y*w;
+      for (let x=-r;x<=r;x++) acc += a[row + (x<0?0:(x>=w?w-1:x))];
+      for (let x=0;x<w;x++){
+        b[row+x] = acc/(2*r+1);
+        acc -= a[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
+        acc += a[row + (x+r+1<0?0:(x+r+1>=w?w-1:x+r+1))];
+      }
+    }
+    for (let x=0;x<w;x++){
+      let acc=0;
+      for (let y=-r;y<=r;y++) acc += b[(y<0?0:(y>=h?h-1:y))*w+x];
+      for (let y=0;y<h;y++){
+        a[y*w+x] = acc/(2*r+1);
+        acc -= b[(y-r<0?0:(y-r>=h?h-1:y-r))*w+x];
+        acc += b[(y+r+1<0?0:(y+r+1>=h?h-1:y+r+1))*w+x];
+      }
+    }
+  }
+  return a;
+}
+function makeClumpMask(w,h,strength){
+  if (strength <= 0.001) return null;
+  const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
+  let coarse = boxBlur(makeNoiseField(cw,ch), cw, ch, 1.2);
+  const mask = new Float32Array(w*h);
+  for (let y=0;y<h;y++){
+    const fy = (y/(h-1))*(ch-1);
+    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
+    for (let x=0;x<w;x++){
+      const fx = (x/(w-1))*(cw-1);
+      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
+      const top = coarse[y0*cw+x0] + (coarse[y0*cw+x1]-coarse[y0*cw+x0])*tx;
+      const bot = coarse[y1*cw+x0] + (coarse[y1*cw+x1]-coarse[y1*cw+x0])*tx;
+      mask[y*w+x] = Math.max(0.15, 1 + (top + (bot-top)*ty)*strength*0.9);
+    }
+  }
+  return mask;
+}
+function clamp8(v){ return v<0?0:(v>255?255:v|0); }
+
+const powLUT = new Float32Array(256);
+let lastBiasLUT = null;
+function updatePowLUT(bias){
+  if (bias === lastBiasLUT) return;
+  const k = 1 / bias;
+  for (let i=0;i<256;i++) powLUT[i] = Math.pow(1 - i/255, k);
+  lastBiasLUT = bias;
+}
+
+/* ---------- Worker State ---------- */
+let W=0, H=0, srcData=null, blurredSrc=null;
+let cachedNoiseFields = null;
+let lastBlurParams = { size:-1, clump:-1, chan:-1, w:-1, h:-1, seedId:0 };
+
+self.onmessage = function(e){
+  const msg = e.data;
+
+  if (msg.cmd === 'init') {
+    W = msg.w; H = msg.h;
+    srcData = new Uint8ClampedArray(msg.buffer);
+    const n = W*H, rC=new Float32Array(n), gC=new Float32Array(n), bC=new Float32Array(n);
+    for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=srcData[i]; gC[px]=srcData[i+1]; bC[px]=srcData[i+2]; }
+    blurredSrc = {
+      r: new Uint8ClampedArray(boxBlur(rC,W,H,1.5)),
+      g: new Uint8ClampedArray(boxBlur(gC,W,H,1.5)),
+      b: new Uint8ClampedArray(boxBlur(bC,W,H,1.5))
+    };
+    cachedNoiseFields = null;
+    lastBlurParams = { size:-1, clump:-1, chan:-1, w:-1, h:-1, seedId:0 };
+    self.postMessage({cmd:'inited'});
+    return;
+  }
+
+  if (msg.cmd === 'render') {
+    const reqId = msg.reqId, p = msg.params, forceHeavy = msg.forceHeavy,
+          seedId = msg.seedId, isSplitScreen = msg.isSplitScreen;
+    const w = W, h = H;
+
+    const needsBlur = forceHeavy ||
+      lastBlurParams.w !== w || lastBlurParams.h !== h ||
+      lastBlurParams.size !== p.size ||
+      lastBlurParams.clump !== p.clump ||
+      lastBlurParams.seedId !== seedId;
+
+    if (needsBlur) {
+      const rN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+      const gN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+      const bN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+      const monoN = new Float32Array(w*h);
+      for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
+      cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: makeClumpMask(w,h,p.clump) };
+      lastBlurParams = { size:p.size, clump:p.clump, chan:p.chan, w, h, seedId };
+    }
+
+    const out = new Uint8ClampedArray(w*h*4);
+    const src = srcData;
+    const amp = p.intensity*0.9;
+    const cfM = cachedNoiseFields.mask;
+    const monoA=cachedNoiseFields.mono, rA=cachedNoiseFields.r, gA=cachedNoiseFields.g, bA=cachedNoiseFields.b;
+    const brR=blurredSrc.r, brG=blurredSrc.g, brB=blurredSrc.b;
+    const halfW=w/2, intHalfW=Math.floor(halfW);
+    updatePowLUT(p.bias);
+    const blendAmt = Math.min(1,p.intensity/100)*0.22;
+    const chanAmt=p.chan, invChan=1-chanAmt;
+
+    const bins = new Array(24).fill(0);
+    const histStep = Math.max(1, Math.floor((w*h)/20000));
+    let maxCount=1;
+    let col=0;
+
+    for (let i=0, px=0; px<w*h; px++, i+=4, col++){
+      if (col===w) col=0;
+      let r0=src[i], g0=src[i+1], b0=src[i+2];
+      if (isSplitScreen && col<intHalfW){
+        out[i]=r0; out[i+1]=g0; out[i+2]=b0; out[i+3]=src[i+3];
+        continue;
+      }
+      if (blendAmt>0){
+        r0 += (brR[px]-r0)*blendAmt;
+        g0 += (brG[px]-g0)*blendAmt;
+        b0 += (brB[px]-b0)*blendAmt;
+      }
+      const lum=(r0+g0+b0)/(3*255);
+      const weight = powLUT[(lum*255+0.5)|0];
+      const cf = cfM ? cfM[px] : 1;
+      const wcf = weight*cf*amp;
+      const m = monoA[px]*invChan;
+      out[i]   = clamp8(r0 + (m+rA[px]*chanAmt)*wcf);
+      out[i+1] = clamp8(g0 + (m+gA[px]*chanAmt)*wcf);
+      out[i+2] = clamp8(b0 + (m+bA[px]*chanAmt)*wcf);
+      out[i+3] = src[i+3];
+
+      if (px % histStep === 0 && (!isSplitScreen || col>=intHalfW)){
+        const outLum=(out[i]+out[i+1]+out[i+2])/3;
+        const bin=Math.min(23, Math.floor(outLum/256*24));
+        bins[bin]++;
+        if(bins[bin]>maxCount) maxCount=bins[bin];
+      }
+    }
+
+    if (isSplitScreen){
+      for (let y=0;y<h;y++){
+        let idx=(y*w+Math.floor(halfW))*4;
+        out[idx]=201; out[idx+1]=67; out[idx+2]=46;
+      }
+    }
+
+    self.postMessage({cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer}, [out.buffer]);
+  }
+};
+</script>
+
 <script>
 "use strict";
 
@@ -302,10 +494,11 @@ const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
 
 let currentObjectUrl = null;
-let srcImageData = null;
+let hasImage = false;
 let originalFileDimensions = { w: 0, h: 0 };
 let originalFileName = "grain-pro-max-quality";
 let isSplitScreen = false;
+let currentSeedId = 1;
 
 // Zoom and Pan State (transform-based: canvas stays centered in .stage,
 // pan/zoom applied purely via CSS transform, stage itself never scrolls)
@@ -315,27 +508,32 @@ let isFitted = true; // true = auto refit on resize; false once user manually zo
 let isDragging = false;
 let startX = 0, startY = 0;
 
-// Caching objects to prevent useless heavy box blur recalculations
-let cachedNoiseFields = null; 
-let blurredSrc = null;
-let lastBlurParams = { size: -1, clump: -1, chan: -1, w: -1, h: -1, seedId: 0 };
-let currentSeedId = 1;
+/* ---------- Render Worker ---------- */
+// The whole grain pipeline (noise gen, box blur, per-pixel compositing) runs
+// off the main thread, so pan/zoom/UI stay responsive during heavy renders.
+const workerCode = document.getElementById('worker-src').textContent;
+const renderWorker = new Worker(URL.createObjectURL(new Blob([workerCode], {type:'application/javascript'})));
+let reqCounter = 0;
+let latestLiveReqId = 0;
+const pendingReqs = new Map(); // reqId -> callback(msg)
 
-// Perf: LUT for Math.pow(lum,bias) (256 entries, recomputed only if bias changes)
-const powLUT = new Float32Array(256);
-let lastBiasLUT = null;
-function updatePowLUT(bias){
-  if (bias === lastBiasLUT) return;
-  const k = 1 / bias; // low bias -> high k -> steep falloff, grain concentrated in deep shadows only
-  for (let i=0;i<256;i++) powLUT[i] = Math.pow(1 - i/255, k);
-  lastBiasLUT = bias;
+renderWorker.onmessage = (e) => {
+  const msg = e.data;
+  if (msg.cmd !== 'rendered') return;
+  const cb = pendingReqs.get(msg.reqId);
+  if (cb) { pendingReqs.delete(msg.reqId); cb(msg); }
+};
+
+function workerRenderOnce(params, forceHeavy, seedId, splitScreen){
+  const reqId = ++reqCounter;
+  return new Promise((resolve) => {
+    pendingReqs.set(reqId, resolve);
+    renderWorker.postMessage({ cmd:'render', reqId, params, forceHeavy, seedId, isSplitScreen: splitScreen });
+  });
 }
 
-// Perf: reuse the output ImageData buffer instead of allocating a new one every frame
-let cachedOut = null, cachedOutW = -1, cachedOutH = -1;
-
 const canvas = document.getElementById("canvas");
-const ctx = canvas.getContext("2d", { willReadFrequently: true });
+const ctx = canvas.getContext("2d");
 const stage = document.getElementById("stage");
 const loader = document.getElementById("loader");
 
@@ -518,83 +716,6 @@ window.addEventListener('orientationchange', () => {
   setTimeout(fitToScreen, 150);
 });
 
-/* ---------- Noise Math ---------- */
-let bmCache = null;
-function gaussian(){
-  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
-  let u=0,v=0;
-  while(u===0) u = Math.random(); while(v===0) v = Math.random();
-  const mag = Math.sqrt(-2.0*Math.log(u));
-  bmCache = mag*Math.sin(2.0*Math.PI*v);
-  return mag*Math.cos(2.0*Math.PI*v);
-}
-let scratchRaw = null, scratchRawSize = -1;
-function makeNoiseField(w,h){
-  const n = w*h;
-  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
-  for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
-  return scratchRaw; // caller must consume (copy) before generating the next field
-}
-let scratchB = null, scratchBSize = -1;
-function grainBlur(src,w,h,radius){
-  if (radius<=0) return src.slice();
-  const r0 = Math.floor(radius), frac = radius-r0;
-  const lo = r0<1 ? src.slice() : boxBlur(src,w,h,r0);
-  const hi = frac>0.05 ? boxBlur(src,w,h,r0+1) : lo;
-  const factor = Math.sqrt(1+radius) * 0.85; // restore contrast lost to averaging at high radius
-  const out = new Float32Array(w*h);
-  for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
-  return out;
-}
-function boxBlur(src,w,h,radius){
-  if (radius < 0.5) return src.slice();
-  let a = src.slice();
-  const n = w*h;
-  if (scratchBSize !== n) { scratchB = new Float32Array(n); scratchBSize = n; }
-  const b = scratchB;
-  const r = Math.max(1, Math.round(radius));
-  for (let pass=0; pass<3; pass++){
-    for (let y=0;y<h;y++){
-      let acc=0; const row=y*w;
-      for (let x=-r;x<=r;x++) acc += a[row + (x<0?0:(x>=w?w-1:x))];
-      for (let x=0;x<w;x++){
-        b[row+x] = acc/(2*r+1);
-        acc -= a[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
-        acc += a[row + (x+r+1<0?0:(x+r+1>=w?w-1:x+r+1))];
-      }
-    }
-    for (let x=0;x<w;x++){
-      let acc=0;
-      for (let y=-r;y<=r;y++) acc += b[(y<0?0:(y>=h?h-1:y))*w+x];
-      for (let y=0;y<h;y++){
-        a[y*w+x] = acc/(2*r+1);
-        acc -= b[(y-r<0?0:(y-r>=h?h-1:y-r))*w+x];
-        acc += b[(y+r+1<0?0:(y+r+1>=h?h-1:y+r+1))*w+x];
-      }
-    }
-  }
-  return a;
-}
-function makeClumpMask(w,h,strength){
-  if (strength <= 0.001) return null;
-  const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
-  let coarse = boxBlur(makeNoiseField(cw,ch), cw, ch, 1.2); 
-  const mask = new Float32Array(w*h);
-  for (let y=0;y<h;y++){
-    const fy = (y/(h-1))*(ch-1);
-    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
-    for (let x=0;x<w;x++){
-      const fx = (x/(w-1))*(cw-1);
-      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
-      const top = coarse[y0*cw+x0] + (coarse[y0*cw+x1]-coarse[y0*cw+x0])*tx;
-      const bot = coarse[y1*cw+x0] + (coarse[y1*cw+x1]-coarse[y1*cw+x0])*tx;
-      mask[y*w+x] = Math.max(0.15, 1 + (top + (bot-top)*ty)*strength*0.9);
-    }
-  }
-  return mask;
-}
-function clamp8(v){ return v<0?0:(v>255?255:v|0); }
-
 /* ---------- Core Pipeline ---------- */
 
 function loadImage(file){
@@ -605,139 +726,61 @@ function loadImage(file){
   image.onload = () => {
     let w = image.width, h = image.height;
     originalFileDimensions = { w, h };
-    
+
     // We render at full native image resolution for maximum quality download!
-    canvas.width = w; 
+    canvas.width = w;
     canvas.height = h;
 
     // Display size always native; zoom/pan handled via CSS transform
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
-    
+
     ctx.drawImage(image, 0, 0, w, h);
-    srcImageData = ctx.getImageData(0,0,w,h);
-    { // precompute a subtle blur of the source once (blended in by intensity, no per-frame cost)
-      const n = w*h, rC=new Float32Array(n), gC=new Float32Array(n), bC=new Float32Array(n);
-      const d = srcImageData.data;
-      for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=d[i]; gC[px]=d[i+1]; bC[px]=d[i+2]; }
-      blurredSrc = {
-        r: new Uint8ClampedArray(boxBlur(rC,w,h,1.5)),
-        g: new Uint8ClampedArray(boxBlur(gC,w,h,1.5)),
-        b: new Uint8ClampedArray(boxBlur(bC,w,h,1.5))
-      };
-    }
-    
+    const imgData = ctx.getImageData(0,0,w,h);
+    hasImage = true;
+
+    // Hand the raw pixels to the worker (zero-copy transfer); it owns all
+    // grain-engine state (noise fields, blurred-source cache, etc) from here on.
+    renderWorker.postMessage(
+      { cmd:'init', w, h, buffer: imgData.data.buffer },
+      [imgData.data.buffer]
+    );
+
     document.getElementById("empty-state").style.display = "none";
     canvas.style.display = "block";
     canvas.style.pointerEvents = "auto";
-    document.getElementById("dims-readout").textContent = `(${w}×${h}px)`;
-    
-    lastBlurParams.w = -1;
+    document.getElementById("dims-readout").textContent = `(${w}\u00d7${h}px)`;
+
     requestRender(true);
     fitToScreen();
   };
   image.src = currentObjectUrl;
 }
 
+function drawWorkerResult(msg){
+  const imgData = new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h);
+  ctx.putImageData(imgData, 0, 0);
+  for (let i=0; i<24; i++){
+    histDivs[i].style.height = Math.max(2, (msg.bins[i]/msg.maxCount)*40) + "px";
+  }
+  loader.classList.remove('active');
+}
+
 let renderTimer = null;
 function requestRender(forceHeavy = false){
-  if(!srcImageData) return;
+  if(!hasImage) return;
   loader.classList.add('active');
   clearTimeout(renderTimer);
   renderTimer = setTimeout(() => {
-    executeRender(forceHeavy);
+    const p = readParams();
+    latestLiveReqId = ++reqCounter;
+    const myReqId = latestLiveReqId;
+    pendingReqs.set(myReqId, (msg) => {
+      if (myReqId !== latestLiveReqId) return; // superseded by a newer request, discard
+      drawWorkerResult(msg);
+    });
+    renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen });
   }, 20);
-}
-
-function executeRender(forceHeavy){
-  const p = readParams();
-  const w = canvas.width, h = canvas.height;
-  
-  const needsBlur = forceHeavy || 
-                    lastBlurParams.w !== w || lastBlurParams.h !== h ||
-                    lastBlurParams.size !== p.size || 
-                    lastBlurParams.clump !== p.clump || 
-                    lastBlurParams.seedId !== currentSeedId;
-
-  if (needsBlur) {
-    const rN = grainBlur(makeNoiseField(w,h), w, h, p.size);
-    const gN = grainBlur(makeNoiseField(w,h), w, h, p.size);
-    const bN = grainBlur(makeNoiseField(w,h), w, h, p.size);
-    
-    const monoN = new Float32Array(w*h);
-    for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
-    
-    cachedNoiseFields = { r: rN, g: gN, b: bN, mono: monoN, mask: makeClumpMask(w,h,p.clump) };
-    
-    lastBlurParams = { size: p.size, clump: p.clump, chan: p.chan, w, h, seedId: currentSeedId };
-  }
-
-  const out = (cachedOutW === w && cachedOutH === h) ? cachedOut : (cachedOut = ctx.createImageData(w,h));
-  cachedOutW = w; cachedOutH = h;
-  const src = srcImageData.data;
-  const outData = out.data;
-  const amp = p.intensity * 0.9;
-  const cfM = cachedNoiseFields.mask;
-  const monoA = cachedNoiseFields.mono, rA = cachedNoiseFields.r, gA = cachedNoiseFields.g, bA = cachedNoiseFields.b;
-  const brR = blurredSrc.r, brG = blurredSrc.g, brB = blurredSrc.b;
-  const halfW = w / 2, intHalfW = Math.floor(halfW);
-  updatePowLUT(p.bias);
-  const blendAmt = Math.min(1, p.intensity/100) * 0.22; // subtle softening, tied to intensity
-  const chanAmt = p.chan, invChan = 1 - chanAmt;
-
-  const bins = new Array(24).fill(0);
-  const histStep = Math.max(1, Math.floor((w*h)/20000));
-  let maxCount = 1;
-  let col = 0;
-
-  for (let i=0, px=0; px < w*h; px++, i+=4, col++){
-    if (col === w) col = 0;
-    let r0 = src[i], g0 = src[i+1], b0 = src[i+2];
-
-    if (isSplitScreen && col < intHalfW) {
-      outData[i] = r0; outData[i+1] = g0; outData[i+2] = b0; outData[i+3] = src[i+3];
-      continue;
-    }
-
-    if (blendAmt > 0) {
-      r0 += (brR[px]-r0)*blendAmt;
-      g0 += (brG[px]-g0)*blendAmt;
-      b0 += (brB[px]-b0)*blendAmt;
-    }
-
-    const lum = (r0+g0+b0) / (3*255);
-    const weight = powLUT[(lum*255 + 0.5) | 0];
-    const cf = cfM ? cfM[px] : 1;
-    const wcf = weight * cf * amp;
-    const m = monoA[px] * invChan;
-
-    outData[i]   = clamp8(r0 + (m + rA[px]*chanAmt) * wcf);
-    outData[i+1] = clamp8(g0 + (m + gA[px]*chanAmt) * wcf);
-    outData[i+2] = clamp8(b0 + (m + bA[px]*chanAmt) * wcf);
-    outData[i+3] = src[i+3];
-
-    if (px % histStep === 0 && (!isSplitScreen || col >= intHalfW)) {
-      const outLum = (outData[i]+outData[i+1]+outData[i+2])/3;
-      const bin = Math.min(23, Math.floor(outLum/256*24));
-      bins[bin]++;
-      if(bins[bin] > maxCount) maxCount = bins[bin];
-    }
-  }
-
-  if (isSplitScreen) {
-    for (let y=0; y<h; y++) {
-      let idx = (y*w + Math.floor(halfW)) * 4;
-      out.data[idx] = 201; out.data[idx+1] = 67; out.data[idx+2] = 46;
-    }
-  }
-
-  ctx.putImageData(out,0,0);
-  
-  for(let i=0; i<24; i++){
-    histDivs[i].style.height = Math.max(2, (bins[i]/maxCount)*40) + "px";
-  }
-
-  requestAnimationFrame(() => { loader.classList.remove('active'); });
 }
 
 /* ---------- Wiring ---------- */
@@ -805,27 +848,22 @@ document.getElementById("save-local").addEventListener("click", () => {
 })();
 
 /* ---------- True Max Quality JPG Download ---------- */
-document.getElementById("download").addEventListener("click", () => {
-  if (!srcImageData) return;
+document.getElementById("download").addEventListener("click", async () => {
+  if (!hasImage) return;
   const btn = document.getElementById("download");
-  const wasSplit = isSplitScreen;
-  if (wasSplit) { isSplitScreen = false; executeRender(false); }
-
   const originalLabel = btn.textContent;
   btn.textContent = "Exporting...";
   btn.disabled = true;
 
-  // toBlob instead of toDataURL: avoids failures/hangs on iOS Safari and
-  // other mobile browsers when exporting large native-resolution images.
-  canvas.toBlob((blob) => {
-    btn.textContent = originalLabel;
-    btn.disabled = false;
-
-    if (!blob) {
-      alert("Errore durante l'esportazione dell'immagine. Riprova.");
-      if (wasSplit) { isSplitScreen = true; executeRender(false); }
-      return;
-    }
+  try {
+    const p = readParams();
+    // Always export the full processed image (never the split-screen divider),
+    // regardless of what's currently shown on screen. Doesn't touch canvas/UI state.
+    const msg = await workerRenderOnce(p, true, currentSeedId, false);
+    const oc = new OffscreenCanvas(msg.w, msg.h);
+    const octx = oc.getContext('2d');
+    octx.putImageData(new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h), 0, 0);
+    const blob = await oc.convertToBlob({ type: "image/jpeg", quality: 1.0 });
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -835,10 +873,14 @@ document.getElementById("download").addEventListener("click", () => {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 2000);
-
-    if (wasSplit) { isSplitScreen = true; executeRender(false); }
-  }, "image/jpeg", 1.0);
+  } catch (err) {
+    alert("Errore durante l'esportazione dell'immagine. Riprova.");
+  } finally {
+    btn.textContent = originalLabel;
+    btn.disabled = false;
+  }
 });
+
 
 const fileInput = document.getElementById("file-input");
 fileInput.addEventListener("change", e => { if (e.target.files[0]) loadImage(e.target.files[0]); });
