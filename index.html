@@ -175,7 +175,7 @@
 <body>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.0</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.2</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -189,6 +189,7 @@
     <div class="empty" id="empty-state">drag an image here</div>
     <div class="canvas-container" id="canvas-container">
       <canvas id="canvas" style="display:none"></canvas>
+      <canvas id="gpu-canvas" style="display:none; position:absolute; inset:0; margin:auto; pointer-events:none;"></canvas>
     </div>
     <div class="zoom-controls">
       <button class="pixel-btn icon" id="zoom-out" title="Zoom Out">-</button>
@@ -376,6 +377,8 @@ function updatePowLUT(bias){
 
 /* ---------- Worker State ---------- */
 let W=0, H=0, srcData=null, blurredSrc=null;
+let cachedRawNoise = null; // Stage A0: raw gaussian fields, independent of size/clump
+let lastRawParams = { w:-1, h:-1, seedId:0 };
 let cachedNoiseFields = null;
 let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
 let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
@@ -394,11 +397,20 @@ self.onmessage = function(e){
       g: new Uint8ClampedArray(boxBlur(gC,W,H,1.5)),
       b: new Uint8ClampedArray(boxBlur(bC,W,H,1.5))
     };
+    cachedRawNoise = null;
     cachedNoiseFields = null;
     cachedGrainDelta = null;
+    lastRawParams = { w:-1, h:-1, seedId:0 };
     lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
     lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
     self.postMessage({cmd:'inited'});
+    const srcCopy = srcData.slice();
+    const blurRCopy = blurredSrc.r.slice(), blurGCopy = blurredSrc.g.slice(), blurBCopy = blurredSrc.b.slice();
+    self.postMessage(
+      { cmd:'blurredSrcReady', w:W, h:H,
+        buffer: srcCopy.buffer, blurR: blurRCopy.buffer, blurG: blurGCopy.buffer, blurB: blurBCopy.buffer },
+      [srcCopy.buffer, blurRCopy.buffer, blurGCopy.buffer, blurBCopy.buffer]
+    );
     return;
   }
 
@@ -408,20 +420,34 @@ self.onmessage = function(e){
     const w = W, h = H;
     const src = srcData;
 
-    // Stage A (heavy): regenerate grain noise fields. Only on size/clump/seed change.
-    const needsBlur = forceHeavy ||
+    // Stage A0 (heaviest sub-step): fresh gaussian random fields. Only on
+    // reseed/new image/forceHeavy -- NOT on a plain Size drag, since the
+    // underlying randomness doesn't need to change, only its blur radius.
+    const needsRaw = forceHeavy ||
+      lastRawParams.w !== w || lastRawParams.h !== h || lastRawParams.seedId !== seedId;
+    if (needsRaw) {
+      cachedRawNoise = {
+        r: makeNoiseField(w,h).slice(),
+        g: makeNoiseField(w,h).slice(),
+        b: makeNoiseField(w,h).slice()
+      };
+      lastRawParams = { w, h, seedId };
+    }
+
+    // Stage A (heavy): blur the (possibly cached) raw noise. On size/clump change.
+    const needsBlur = needsRaw ||
       lastBlurParams.w !== w || lastBlurParams.h !== h ||
       lastBlurParams.size !== p.size ||
-      lastBlurParams.clump !== p.clump ||
-      lastBlurParams.seedId !== seedId;
+      lastBlurParams.clump !== p.clump;
 
     if (needsBlur) {
-      const rN = grainBlur(makeNoiseField(w,h), w, h, p.size);
-      const gN = grainBlur(makeNoiseField(w,h), w, h, p.size);
-      const bN = grainBlur(makeNoiseField(w,h), w, h, p.size);
+      const rN = grainBlur(cachedRawNoise.r, w, h, p.size);
+      const gN = grainBlur(cachedRawNoise.g, w, h, p.size);
+      const bN = grainBlur(cachedRawNoise.b, w, h, p.size);
       const monoN = new Float32Array(w*h);
       for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
-      cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: makeClumpMask(w,h,p.clump) };
+      const maskN = makeClumpMask(w,h,p.clump) || new Float32Array(w*h).fill(1);
+      cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: maskN };
       lastBlurParams = { size:p.size, clump:p.clump, w, h, seedId };
     }
 
@@ -498,7 +524,18 @@ self.onmessage = function(e){
       }
     }
 
-    self.postMessage({cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer}, [out.buffer]);
+    let gpuPayload = null, gpuTransfer = [];
+    if (needsBlur) {
+      const monoC = cachedNoiseFields.mono.slice(), rC2 = cachedNoiseFields.r.slice(),
+            gC2 = cachedNoiseFields.g.slice(), bC2 = cachedNoiseFields.b.slice(), maskC = cachedNoiseFields.mask.slice();
+      gpuPayload = { mono: monoC.buffer, r: rC2.buffer, g: gC2.buffer, b: bC2.buffer, mask: maskC.buffer };
+      gpuTransfer = [monoC.buffer, rC2.buffer, gC2.buffer, bC2.buffer, maskC.buffer];
+    }
+
+    self.postMessage(
+      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload },
+      gpuPayload ? [out.buffer, ...gpuTransfer] : [out.buffer]
+    );
   }
 };
 </script>
@@ -559,7 +596,17 @@ const pendingReqs = new Map(); // reqId -> callback(msg)
 
 renderWorker.onmessage = (e) => {
   const msg = e.data;
+  if (msg.cmd === 'blurredSrcReady') {
+    uploadGPUBaseTextures(msg.w, msg.h, new Uint8ClampedArray(msg.buffer), new Uint8ClampedArray(msg.blurR), new Uint8ClampedArray(msg.blurG), new Uint8ClampedArray(msg.blurB));
+    return;
+  }
   if (msg.cmd !== 'rendered') return;
+  if (msg.gpuData) {
+    uploadGPUNoiseTextures(msg.w, msg.h,
+      new Float32Array(msg.gpuData.mono), new Float32Array(msg.gpuData.r),
+      new Float32Array(msg.gpuData.g), new Float32Array(msg.gpuData.b),
+      new Float32Array(msg.gpuData.mask));
+  }
   const cb = pendingReqs.get(msg.reqId);
   if (cb) { pendingReqs.delete(msg.reqId); cb(msg); }
 };
@@ -576,6 +623,185 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const stage = document.getElementById("stage");
 const loader = document.getElementById("loader");
+
+/* ---------- GPU instant preview (optional fast lane) ----------
+   Purely additive: draws a transparent overlay on top of the real canvas
+   with the SAME math as Stage B+C, so intensity/bias/chan feel instant
+   during a drag. The authoritative worker result (already fully tested)
+   always lands right after and is what actually gets shown/saved -- if
+   anything about the GPU path is wrong or unsupported, it silently never
+   activates and the app behaves exactly as before.
+*/
+const gpuCanvas = document.getElementById('gpu-canvas');
+let gl = null, glProg = null, glReady = false, glTexturesReady = false;
+let glUniforms = {}, glTex = null;
+
+function initGL(){
+  try {
+    gl = gpuCanvas.getContext('webgl2', { premultipliedAlpha: false });
+    if (!gl) return false;
+    const extFloat = gl.getExtension('EXT_color_buffer_float') || gl.getExtension('OES_texture_float_linear');
+    // Not strictly required for sampling-only float textures in WebGL2 core,
+    // but some mobile GPUs are picky; if unavailable we still try, and the
+    // try/catch below will catch any resulting failure gracefully.
+
+    const vsSrc = `#version 300 es
+      in vec2 aPos;
+      out vec2 vUv;
+      void main(){
+        vUv = aPos * 0.5 + 0.5;
+        gl_Position = vec4(aPos, 0.0, 1.0);
+      }`;
+    const fsSrc = `#version 300 es
+      precision highp float;
+      in vec2 vUv;
+      uniform sampler2D uSrc;
+      uniform sampler2D uBlur;
+      uniform sampler2D uNoise; // rgba: mono,r,g,b
+      uniform sampler2D uMask;
+      uniform float uBias;
+      uniform float uChan;
+      uniform float uAmp;
+      uniform float uBlendAmt;
+      uniform float uSplit;
+      out vec4 fragColor;
+      void main(){
+        vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
+        vec4 src = texture(uSrc, uv);
+        if (uSplit > 0.5 && uv.x < 0.5) { fragColor = src; return; }
+        vec4 noise = texture(uNoise, uv);
+        float mask = texture(uMask, uv).r;
+        float lum = (src.r+src.g+src.b) / 3.0;
+        float weight = pow(clamp(1.0-lum,0.0,1.0), 1.0/uBias);
+        float wcf = weight * mask;
+        float invChan = 1.0 - uChan;
+        float m = noise.r * invChan;
+        vec3 grain = vec3(
+          (m + noise.g*uChan) * wcf,
+          (m + noise.b*uChan) * wcf,
+          (m + noise.a*uChan) * wcf
+        );
+        vec3 blur = texture(uBlur, uv).rgb;
+        vec3 base = mix(src.rgb, blur, uBlendAmt);
+        vec3 result = base + (grain * uAmp) * (1.0/255.0);
+        fragColor = vec4(clamp(result, 0.0, 1.0), src.a);
+      }`;
+
+    function compile(type, src){
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src);
+      gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        const log = gl.getShaderInfoLog(s);
+        gl.deleteShader(s);
+        throw new Error(log);
+      }
+      return s;
+    }
+    const vs = compile(gl.VERTEX_SHADER, vsSrc);
+    const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
+    glProg = gl.createProgram();
+    gl.attachShader(glProg, vs);
+    gl.attachShader(glProg, fs);
+    gl.linkProgram(glProg);
+    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
+      throw new Error(gl.getProgramInfoLog(glProg));
+    }
+    gl.useProgram(glProg);
+
+    const quad = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
+    const buf = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
+    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
+    const aPos = gl.getAttribLocation(glProg, 'aPos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    glUniforms = {
+      uSrc: gl.getUniformLocation(glProg,'uSrc'),
+      uBlur: gl.getUniformLocation(glProg,'uBlur'),
+      uNoise: gl.getUniformLocation(glProg,'uNoise'),
+      uMask: gl.getUniformLocation(glProg,'uMask'),
+      uBias: gl.getUniformLocation(glProg,'uBias'),
+      uChan: gl.getUniformLocation(glProg,'uChan'),
+      uAmp: gl.getUniformLocation(glProg,'uAmp'),
+      uBlendAmt: gl.getUniformLocation(glProg,'uBlendAmt'),
+      uSplit: gl.getUniformLocation(glProg,'uSplit'),
+    };
+
+    glTex = {
+      src: gl.createTexture(), blur: gl.createTexture(),
+      noise: gl.createTexture(), mask: gl.createTexture()
+    };
+    return true;
+  } catch(err) {
+    console.warn('GPU preview unavailable, using CPU path only:', err);
+    gl = null;
+    return false;
+  }
+}
+
+function glSetupTexture(unit, format, type, w, h, data){
+  gl.activeTexture(gl.TEXTURE0 + unit);
+  const tex = [glTex.src, glTex.blur, glTex.noise, glTex.mask][unit];
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  const baseFormat = format === gl.RGBA8 ? gl.RGBA : (format === gl.R32F ? gl.RED : gl.RGBA);
+  gl.texImage2D(gl.TEXTURE_2D, 0, format, w, h, 0, baseFormat, type, data);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+}
+
+function uploadGPUBaseTextures(w, h, srcBytes, blurR, blurG, blurB){
+  if (!glReady) return;
+  try {
+    gpuCanvas.width = w; gpuCanvas.height = h;
+    gl.viewport(0,0,w,h);
+    glSetupTexture(0, gl.RGBA8, gl.UNSIGNED_BYTE, w, h, srcBytes);
+    const blurRGBA = new Uint8Array(w*h*4);
+    for (let i=0,px=0; px<w*h; px++, i+=4){ blurRGBA[i]=blurR[px]; blurRGBA[i+1]=blurG[px]; blurRGBA[i+2]=blurB[px]; blurRGBA[i+3]=255; }
+    glSetupTexture(1, gl.RGBA8, gl.UNSIGNED_BYTE, w, h, blurRGBA);
+  } catch(err) { console.warn('GPU base texture upload failed:', err); glReady = false; }
+}
+
+function uploadGPUNoiseTextures(w, h, mono, r, g, b, mask){
+  if (!glReady) return;
+  try {
+    const noiseRGBA = new Float32Array(w*h*4);
+    for (let i=0,px=0; px<w*h; px++, i+=4){
+      noiseRGBA[i]=mono[px]; noiseRGBA[i+1]=r[px]; noiseRGBA[i+2]=g[px]; noiseRGBA[i+3]=b[px];
+    }
+    glSetupTexture(2, gl.RGBA32F, gl.FLOAT, w, h, noiseRGBA);
+    glSetupTexture(3, gl.R32F, gl.FLOAT, w, h, mask);
+    glTexturesReady = true;
+  } catch(err) { console.warn('GPU noise texture upload failed:', err); glReady = false; glTexturesReady = false; }
+}
+
+function drawGPUPreview(p, splitScreen){
+  if (!glReady || !glTexturesReady) return false;
+  try {
+    gl.useProgram(glProg);
+    gl.uniform1i(glUniforms.uSrc, 0);
+    gl.uniform1i(glUniforms.uBlur, 1);
+    gl.uniform1i(glUniforms.uNoise, 2);
+    gl.uniform1i(glUniforms.uMask, 3);
+    gl.uniform1f(glUniforms.uBias, p.bias);
+    gl.uniform1f(glUniforms.uChan, p.chan);
+    gl.uniform1f(glUniforms.uAmp, p.intensity*0.9);
+    gl.uniform1f(glUniforms.uBlendAmt, Math.min(1,p.intensity/100)*0.22);
+    gl.uniform1f(glUniforms.uSplit, splitScreen ? 1.0 : 0.0);
+    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    gpuCanvas.style.width = canvas.style.width;
+    gpuCanvas.style.height = canvas.style.height;
+    gpuCanvas.style.transform = canvas.style.transform;
+    gpuCanvas.style.display = 'block';
+    return true;
+  } catch(err) { console.warn('GPU draw failed:', err); glReady = false; return false; }
+}
+function hideGPUPreview(){ gpuCanvas.style.display = 'none'; }
+
+glReady = initGL();
 
 // Pre-create histogram divs
 const histHost = document.getElementById("hist");
@@ -803,6 +1029,7 @@ function drawWorkerResult(msg){
   for (let i=0; i<24; i++){
     histDivs[i].style.height = Math.max(2, (msg.bins[i]/msg.maxCount)*40) + "px";
   }
+  hideGPUPreview();
   loader.classList.remove('active');
 }
 
@@ -852,6 +1079,7 @@ for(let key in els){
     updateReadout();
     e.target.parentElement.classList.add("active");
     const isHeavy = (key === 'size' || key === 'clump');
+    if (!isHeavy && hasImage) drawGPUPreview(readParams(), isSplitScreen);
     requestRender(isHeavy);
   });
   els[key].addEventListener("change", (e) => { e.target.parentElement.classList.remove("active"); });
