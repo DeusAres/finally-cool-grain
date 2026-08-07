@@ -200,7 +200,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.3</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.4</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -267,6 +267,10 @@
         <input type="range" id="bias" min="20" max="150" value="60">
       </div>
       <div class="row">
+        <div class="label"><span>Shadow Lift / Compress</span><span class="val" id="v-lift">0</span></div>
+        <input type="range" id="lift" min="-50" max="50" value="0">
+      </div>
+      <div class="row">
         <div class="label"><span>Color Independence</span><span class="val" id="v-chan">70</span></div>
         <input type="range" id="chan" min="0" max="100" value="70">
       </div>
@@ -292,6 +296,7 @@
       <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Ricalcola il blur.</li>
       <li><strong>Clumping:</strong> Aggregazione chimica realistica. Ricalcola il blur.</li>
       <li><strong>Shadow Bias:</strong> Concentrazione della grana nelle ombre.</li>
+      <li><strong>Shadow Lift / Compress:</strong> Solleva (+) o comprime (-) le ombre. Effetto minimo sulle alte luci.</li>
       <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
     </ul>
   </div>
@@ -444,6 +449,7 @@ self.onmessage = function(e){
           seedId = msg.seedId, isSplitScreen = msg.isSplitScreen;
     const w = W, h = H;
     const src = srcData;
+    const t0 = performance.now();
 
     // Stage A0 (heaviest sub-step): fresh gaussian random fields. Only on
     // reseed/new image/forceHeavy -- NOT on a plain Size drag, since the
@@ -458,6 +464,7 @@ self.onmessage = function(e){
       };
       lastRawParams = { w, h, seedId };
     }
+    const t1 = performance.now();
 
     // Stage A (heavy): blur the (possibly cached) raw noise. On size/clump change.
     const needsBlur = needsRaw ||
@@ -475,6 +482,7 @@ self.onmessage = function(e){
       cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: maskN };
       lastBlurParams = { size:p.size, clump:p.clump, w, h, seedId };
     }
+    const t2 = performance.now();
 
     // Stage B (medium): apply shadow-bias weight + channel mix -> grain delta,
     // still independent of intensity. Recomputed on bias/chan change (or if A ran).
@@ -510,6 +518,7 @@ self.onmessage = function(e){
     const gDR=cachedGrainDelta.r, gDG=cachedGrainDelta.g, gDB=cachedGrainDelta.b;
     const amp = p.intensity*0.9;
     const blendAmt = Math.min(1,p.intensity/100)*0.22;
+    const liftAmt = p.lift || 0;
     const halfW=w/2, intHalfW=Math.floor(halfW);
 
     const bins = new Array(24).fill(0);
@@ -528,6 +537,15 @@ self.onmessage = function(e){
         r0 += (brR[px]-r0)*blendAmt;
         g0 += (brG[px]-g0)*blendAmt;
         b0 += (brB[px]-b0)*blendAmt;
+      }
+      if (liftAmt !== 0){
+        // Single bidirectional control: positive lifts shadows (fog/faded
+        // look, raises the black floor), negative compresses/crushes them
+        // (more punch). Effect scales with how dark the pixel already is,
+        // so highlights stay essentially untouched either way.
+        r0 = r0 + liftAmt*(255-r0);
+        g0 = g0 + liftAmt*(255-g0);
+        b0 = b0 + liftAmt*(255-b0);
       }
       out[i]   = clamp8(r0 + gDR[px]*amp);
       out[i+1] = clamp8(g0 + gDG[px]*amp);
@@ -557,8 +575,17 @@ self.onmessage = function(e){
       gpuTransfer = [monoC.buffer, rC2.buffer, gC2.buffer, bC2.buffer, maskC.buffer];
     }
 
+    const t3 = performance.now();
+    const timing = {
+      total: +(t3-t0).toFixed(1),
+      stageA0: +(t1-t0).toFixed(1), stageA0Ran: needsRaw,
+      stageA: +(t2-t1).toFixed(1), stageARan: needsBlur,
+      stageBC: +(t3-t2).toFixed(1), stageBRan: needsCompose,
+      w, h
+    };
+
     self.postMessage(
-      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload },
+      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload, timing },
       gpuPayload ? [out.buffer, ...gpuTransfer] : [out.buffer]
     );
   }
@@ -578,11 +605,11 @@ modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.
 /* ---------- Presets ---------- */
 const presets = {
   custom: null,
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30 }
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 8 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -591,6 +618,7 @@ const els = {
   size: document.getElementById("size"),
   clump: document.getElementById("clump"),
   bias: document.getElementById("bias"),
+  lift: document.getElementById("lift"),
   chan: document.getElementById("chan")
 };
 const vEls = {};
@@ -629,7 +657,13 @@ renderWorker.onmessage = (e) => {
     return;
   }
   if (msg.cmd !== 'rendered') return;
-  window.__debugLog && window.__debugLog('worker: rendered received (reqId=' + msg.reqId + ', hasGpuData=' + !!msg.gpuData + ')');
+  if (msg.timing) {
+    const t = msg.timing;
+    window.__debugLog && window.__debugLog(
+      `render ${t.w}x${t.h}: total ${t.total}ms ` +
+      `[A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
+    );
+  }
   if (msg.gpuData) {
     uploadGPUNoiseTextures(msg.w, msg.h,
       new Float32Array(msg.gpuData.mono), new Float32Array(msg.gpuData.r),
@@ -719,6 +753,7 @@ function initGL(){
       uniform float uChan;
       uniform float uAmp;
       uniform float uBlendAmt;
+      uniform float uLift;
       uniform float uSplit;
       out vec4 fragColor;
       void main(){
@@ -739,6 +774,7 @@ function initGL(){
         );
         vec3 blur = texture(uBlur, uv).rgb;
         vec3 base = mix(src.rgb, blur, uBlendAmt);
+        base = base + uLift*(1.0-base);
         vec3 result = base + (grain * uAmp) * (1.0/255.0);
         fragColor = vec4(clamp(result, 0.0, 1.0), src.a);
       }`;
@@ -782,6 +818,7 @@ function initGL(){
       uChan: gl.getUniformLocation(glProg,'uChan'),
       uAmp: gl.getUniformLocation(glProg,'uAmp'),
       uBlendAmt: gl.getUniformLocation(glProg,'uBlendAmt'),
+      uLift: gl.getUniformLocation(glProg,'uLift'),
       uSplit: gl.getUniformLocation(glProg,'uSplit'),
     };
 
@@ -814,10 +851,9 @@ function glSetupTexture(unit, format, type, w, h, data){
 let gpuTexW = 0, gpuTexH = 0;
 function uploadGPUBaseTextures(w, h, srcBytes, blurR, blurG, blurB){
   if (!glReady) return;
-  window.__debugLog && window.__debugLog('uploadGPUBaseTextures start, src=' + w + 'x' + h);
+  const t0 = performance.now();
   try {
     const { gw, gh } = computeGpuDims(w, h);
-    window.__debugLog && window.__debugLog('capped gpu dims: ' + gw + 'x' + gh);
     gpuTexW = gw; gpuTexH = gh;
     gpuCanvas.width = gw; gpuCanvas.height = gh;
     gl.viewport(0,0,gw,gh);
@@ -829,13 +865,13 @@ function uploadGPUBaseTextures(w, h, srcBytes, blurR, blurG, blurB){
     for (let i=0,px=0; px<w*h; px++, i+=4){ blurRGBA[i]=blurR[px]; blurRGBA[i+1]=blurG[px]; blurRGBA[i+2]=blurB[px]; blurRGBA[i+3]=255; }
     const blurSmall = (gw===w && gh===h) ? blurRGBA : downsample(blurRGBA, w, h, gw, gh, 4);
     glSetupTexture(1, gl.RGBA8, gl.UNSIGNED_BYTE, gw, gh, blurSmall);
-    window.__debugLog && window.__debugLog('uploadGPUBaseTextures SUCCESS');
-  } catch(err) { console.warn('GPU base texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUBaseTextures FAILED: ' + (err.stack||err.message||String(err))); glReady = false; }
+    window.__debugLog && window.__debugLog('GPU base textures uploaded: ' + w+'x'+h + ' -> capped ' + gw+'x'+gh + ' (' + (performance.now()-t0).toFixed(1) + 'ms)');
+  } catch(err) { console.warn('GPU base texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUBaseTextures FAILED: ' + (err.stack||err.message||String(err)), true); glReady = false; }
 }
 
 function uploadGPUNoiseTextures(w, h, mono, r, g, b, mask){
   if (!glReady) return;
-  window.__debugLog && window.__debugLog('uploadGPUNoiseTextures start');
+  const t0 = performance.now();
   try {
     const { gw, gh } = computeGpuDims(w, h);
     const noiseRGBA = new Float32Array(w*h*4);
@@ -847,8 +883,8 @@ function uploadGPUNoiseTextures(w, h, mono, r, g, b, mask){
     const maskSmall = (gw===w && gh===h) ? mask : downsample(mask, w, h, gw, gh, 1);
     glSetupTexture(3, gl.R32F, gl.FLOAT, gw, gh, maskSmall);
     glTexturesReady = true;
-    window.__debugLog && window.__debugLog('uploadGPUNoiseTextures SUCCESS - GPU preview is now live');
-  } catch(err) { console.warn('GPU noise texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUNoiseTextures FAILED: ' + (err.stack||err.message||String(err))); glReady = false; glTexturesReady = false; }
+    window.__debugLog && window.__debugLog('GPU noise textures uploaded, preview live (' + (performance.now()-t0).toFixed(1) + 'ms)');
+  } catch(err) { console.warn('GPU noise texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUNoiseTextures FAILED: ' + (err.stack||err.message||String(err)), true); glReady = false; glTexturesReady = false; }
 }
 
 function drawGPUPreview(p, splitScreen){
@@ -864,6 +900,7 @@ function drawGPUPreview(p, splitScreen){
     gl.uniform1f(glUniforms.uChan, p.chan);
     gl.uniform1f(glUniforms.uAmp, p.intensity*0.9);
     gl.uniform1f(glUniforms.uBlendAmt, Math.min(1,p.intensity/100)*0.22);
+    gl.uniform1f(glUniforms.uLift, p.lift || 0);
     gl.uniform1f(glUniforms.uSplit, splitScreen ? 1.0 : 0.0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     // GPU canvas renders at a capped internal resolution but is displayed
@@ -894,6 +931,7 @@ function readParams(){
     size: +els.size.value / 10,      
     clump: +els.clump.value / 100,
     bias: +els.bias.value / 100,     
+    lift: +els.lift.value / 200, // slider -50..50 -> -0.25..0.25 (kept subtle on purpose)
     chan: +els.chan.value / 100,
   };
 }
@@ -904,6 +942,7 @@ function updateReadout(){
   vEls.size.textContent = p.size.toFixed(1);
   vEls.clump.textContent = Math.round(p.clump*100);
   vEls.bias.textContent = p.bias.toFixed(2);
+  vEls.lift.textContent = els.lift.value;
   vEls.chan.textContent = Math.round(p.chan*100);
 }
 
@@ -1181,6 +1220,7 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     els.size.value = p.size;
     els.clump.value = p.clump;
     els.bias.value = p.bias;
+    els.lift.value = p.lift || 0;
     els.chan.value = p.chan;
     updateReadout();
     requestRender(true);
@@ -1190,7 +1230,7 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
 document.getElementById("reseed").addEventListener("click", () => { currentSeedId++; requestRender(true); });
 document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
-  els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.chan.value = 70;
+  els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
   updateReadout(); requestRender(true);
 });
 
