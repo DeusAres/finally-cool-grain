@@ -174,13 +174,18 @@
 </head>
 <body>
   <button id="debug-btn" style="position:fixed; bottom:12px; right:12px; z-index:99998; background:#111; color:#0f0; border:1px solid #0f0; font:11px monospace; padding:8px 10px; border-radius:4px; opacity:0.6;">LOG</button>
-  <div id="debug-overlay" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.95); color:#0f0; font:11px monospace; padding:16px; padding-top:48px; overflow:auto; white-space:pre-wrap; -webkit-user-select:text; user-select:text;"></div>
+  <div id="debug-overlay" style="display:none; position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.95); color:#0f0; font:11px monospace; padding:16px; padding-top:48px; overflow:auto; white-space:pre-wrap; -webkit-user-select:text; user-select:text;">
+    <button id="debug-copy" style="position:fixed; top:8px; right:8px; z-index:100000; background:#0f0; color:#000; border:none; font:11px monospace; padding:6px 10px; border-radius:4px;">Copy All</button>
+    <div id="debug-text"></div>
+  </div>
   <script>
     (function(){
       const box = document.getElementById('debug-overlay');
       const btn = document.getElementById('debug-btn');
+      const copyBtn = document.getElementById('debug-copy');
+      const textEl = document.getElementById('debug-text');
       const lines = [];
-      function render(){ box.textContent = lines.join('\n\n'); }
+      function render(){ textEl.textContent = lines.join('\n\n'); }
       function log(msg, isError){
         lines.push('[' + new Date().toISOString().slice(11,19) + '] ' + msg);
         render();
@@ -189,6 +194,25 @@
       window.__debugLog = log;
       btn.addEventListener('click', () => { render(); box.style.display = 'block'; });
       box.addEventListener('click', () => { box.style.display = 'none'; });
+      copyBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const text = lines.join('\n\n');
+        function fallbackCopy(){
+          const ta = document.createElement('textarea');
+          ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+          document.body.appendChild(ta); ta.focus(); ta.select();
+          try { document.execCommand('copy'); } catch(err) {}
+          document.body.removeChild(ta);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(text).catch(fallbackCopy);
+        } else {
+          fallbackCopy();
+        }
+        const old = copyBtn.textContent;
+        copyBtn.textContent = 'Copied!';
+        setTimeout(() => { copyBtn.textContent = old; }, 1000);
+      });
       window.addEventListener('error', (e) => {
         log('❌ UNCAUGHT ERROR:\n' + (e.error && e.error.stack ? e.error.stack : e.message + ' @ ' + e.filename + ':' + e.lineno + ':' + e.colno), true);
       });
@@ -200,7 +224,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.4</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.6</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -234,6 +258,7 @@
         <option value="hp5">Ilford HP5 Plus 400 (B&W)</option>
         <option value="portra800">Portra 800 (Color Chunky)</option>
         <option value="heavy">Push Process (Heavy Grain)</option>
+        <option value="saved1">Saved Custom 1</option>
       </select>
       <div class="tools-row">
         <button id="reseed" class="pixel-btn" style="flex:1">Reseed</button>
@@ -446,7 +471,8 @@ self.onmessage = function(e){
 
   if (msg.cmd === 'render') {
     const reqId = msg.reqId, p = msg.params, forceHeavy = msg.forceHeavy,
-          seedId = msg.seedId, isSplitScreen = msg.isSplitScreen;
+          seedId = msg.seedId, isSplitScreen = msg.isSplitScreen,
+          wantGpuData = msg.wantGpuData !== false; // default true for the live-preview path
     const w = W, h = H;
     const src = srcData;
     const t0 = performance.now();
@@ -568,7 +594,7 @@ self.onmessage = function(e){
     }
 
     let gpuPayload = null, gpuTransfer = [];
-    if (needsBlur) {
+    if (needsBlur && wantGpuData) {
       const monoC = cachedNoiseFields.mono.slice(), rC2 = cachedNoiseFields.r.slice(),
             gC2 = cachedNoiseFields.g.slice(), bC2 = cachedNoiseFields.b.slice(), maskC = cachedNoiseFields.mask.slice();
       gpuPayload = { mono: monoC.buffer, r: rC2.buffer, g: gC2.buffer, b: bC2.buffer, mask: maskC.buffer };
@@ -609,7 +635,8 @@ const presets = {
   kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0 },
   hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0 },
   portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 8 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0 }
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0 },
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 7, chan: 72 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -682,7 +709,7 @@ function workerRenderOnce(params, forceHeavy, seedId, splitScreen){
   const reqId = ++reqCounter;
   return new Promise((resolve) => {
     pendingReqs.set(reqId, resolve);
-    renderWorker.postMessage({ cmd:'render', reqId, params, forceHeavy, seedId, isSplitScreen: splitScreen });
+    renderWorker.postMessage({ cmd:'render', reqId, params, forceHeavy, seedId, isSplitScreen: splitScreen, wantGpuData: false });
   });
 }
 
@@ -1100,6 +1127,9 @@ window.addEventListener('orientationchange', () => {
 /* ---------- Core Pipeline ---------- */
 
 function loadImage(file){
+  window.__debugLog && window.__debugLog('loadImage() called: ' + (file.name||'?') + ', ' + (file.size ? (file.size/1024/1024).toFixed(1)+'MB' : '?'));
+  glTexturesReady = false; // stale until the new image's textures land
+  hideGPUPreview();
   originalFileName = (file.name || "grain-pro-max-quality").replace(/\.[^/.]+$/, "");
   if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
@@ -1237,28 +1267,40 @@ document.getElementById("reset").addEventListener("click", () => {
 /* ---------- Local Save/Load (localStorage) ---------- */
 const LS_KEY = "grainpro_custom_v1";
 document.getElementById("save-local").addEventListener("click", () => {
-  const data = {};
-  for (let key in els) data[key] = els[key].value;
-  localStorage.setItem(LS_KEY, JSON.stringify(data));
   const btn = document.getElementById("save-local");
   const old = btn.textContent;
-  btn.textContent = "Saved!";
-  setTimeout(() => { btn.textContent = old; }, 1000);
+  try {
+    const data = {};
+    for (let key in els) data[key] = els[key].value;
+    localStorage.setItem(LS_KEY, JSON.stringify(data));
+    // Verify it actually persisted (some browsers accept the call but silently
+    // don't store anything, e.g. private browsing / file:// origin quirks).
+    const check = localStorage.getItem(LS_KEY);
+    if (!check) throw new Error('localStorage.getItem returned nothing right after setItem');
+    window.__debugLog && window.__debugLog('Save Local OK: ' + check);
+    btn.textContent = "Saved!";
+  } catch(err) {
+    window.__debugLog && window.__debugLog('Save Local FAILED: ' + (err.message||String(err)), true);
+    btn.textContent = "Failed!";
+  }
+  setTimeout(() => { btn.textContent = old; }, 1200);
 });
 (function loadLocal(){
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (!raw) return;
+    if (!raw) { window.__debugLog && window.__debugLog('loadLocal: nothing saved yet'); return; }
     const data = JSON.parse(raw);
     for (let key in data) if (els[key]) els[key].value = data[key];
     document.getElementById("preset-sel").value = "custom";
     updateReadout();
-  } catch(e) {}
+    window.__debugLog && window.__debugLog('loadLocal restored: ' + raw);
+  } catch(e) { window.__debugLog && window.__debugLog('loadLocal FAILED: ' + (e.message||String(e)), true); }
 })();
 
 /* ---------- True Max Quality JPG Download ---------- */
 document.getElementById("download").addEventListener("click", async () => {
   if (!hasImage) return;
+  window.__debugLog && window.__debugLog('Download clicked, requesting full-res render (no GPU payload)...');
   const btn = document.getElementById("download");
   const originalLabel = btn.textContent;
   btn.textContent = "Exporting...";
@@ -1269,10 +1311,12 @@ document.getElementById("download").addEventListener("click", async () => {
     // Always export the full processed image (never the split-screen divider),
     // regardless of what's currently shown on screen. Doesn't touch canvas/UI state.
     const msg = await workerRenderOnce(p, true, currentSeedId, false);
+    window.__debugLog && window.__debugLog('Export render received, encoding JPEG...');
     const oc = new OffscreenCanvas(msg.w, msg.h);
     const octx = oc.getContext('2d');
     octx.putImageData(new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h), 0, 0);
     const blob = await oc.convertToBlob({ type: "image/jpeg", quality: 1.0 });
+    window.__debugLog && window.__debugLog('JPEG encoded (' + (blob.size/1024/1024).toFixed(1) + 'MB), triggering download...');
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
@@ -1282,7 +1326,9 @@ document.getElementById("download").addEventListener("click", async () => {
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 2000);
+    window.__debugLog && window.__debugLog('Download complete.');
   } catch (err) {
+    window.__debugLog && window.__debugLog('Download FAILED: ' + (err.stack||err.message||String(err)), true);
     alert("Errore durante l'esportazione dell'immagine. Riprova.");
   } finally {
     btn.textContent = originalLabel;
