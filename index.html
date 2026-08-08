@@ -224,7 +224,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.7</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.8</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -303,6 +303,10 @@
 
     <div class="group">
       <h3>Output <span id="dims-readout" style="color:var(--dim); font-size:9px;"></span></h3>
+      <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); margin-bottom:10px; cursor:pointer;">
+        <input type="checkbox" id="add-border" style="accent-color:var(--safelight);">
+        Add white border (2%)
+      </label>
       <button id="download" class="pixel-btn primary" style="width:100%">Download Max Quality JPG</button>
       <div class="hist" id="hist"></div>
     </div>
@@ -358,16 +362,41 @@ function getJpegliModule(){
   if (!jpegliModulePromise) jpegliModulePromise = JpegliModule();
   return jpegliModulePromise;
 }
-function encodeWithJpegli(Module, rgbaOut, w, h, distance){
+function rgbaToRgb(rgba, w, h){
   const n = w*h;
   const rgb = new Uint8Array(n*3);
-  for (let i=0,px=0,j=0; px<n; px++, i+=4, j+=3){ rgb[j]=rgbaOut[i]; rgb[j+1]=rgbaOut[i+1]; rgb[j+2]=rgbaOut[i+2]; }
+  for (let i=0,px=0,j=0; px<n; px++, i+=4, j+=3){ rgb[j]=rgba[i]; rgb[j+1]=rgba[i+1]; rgb[j+2]=rgba[i+2]; }
+  return rgb;
+}
+// Adds a uniform white border on all 4 sides, sized as 2% of the LONGER
+// side of the image (not each side's own dimension), matching a classic
+// print-mat / gallery frame look.
+function addWhiteBorderRgb(rgb, w, h){
+  const longSide = Math.max(w, h);
+  const border = Math.round(longSide * 0.02);
+  if (border <= 0) return { rgb, w, h };
+  const nw = w + border*2, nh = h + border*2;
+  const out = new Uint8Array(nw*nh*3).fill(255); // white
+  for (let y=0; y<h; y++){
+    const srcOff = y*w*3;
+    const dstOff = ((y+border)*nw + border)*3;
+    out.set(rgb.subarray(srcOff, srcOff+w*3), dstOff);
+  }
+  return { rgb: out, w: nw, h: nh };
+}
+function encodeWithJpegli(Module, rgbaOut, w, h, distance, addBorder){
+  let rgb = rgbaToRgb(rgbaOut, w, h);
+  let ew = w, eh = h;
+  if (addBorder) {
+    const bordered = addWhiteBorderRgb(rgb, w, h);
+    rgb = bordered.rgb; ew = bordered.w; eh = bordered.h;
+  }
   const inPtr = Module._malloc(rgb.length);
   Module.HEAPU8.set(rgb, inPtr);
   const outSizePtr = Module._malloc(4);
   const encode = Module.cwrap('jpegli_wasm_encode_rgb', 'number',
     ['number','number','number','number','number','number','number']);
-  const outPtr = encode(inPtr, w, h, distance, 2, 1, outSizePtr);
+  const outPtr = encode(inPtr, ew, eh, distance, 2, 1, outSizePtr);
   let result = null;
   if (outPtr) {
     const outSize = new DataView(Module.HEAPU8.buffer).getUint32(outSizePtr, true);
@@ -376,7 +405,7 @@ function encodeWithJpegli(Module, rgbaOut, w, h, distance){
   }
   Module._free(inPtr);
   Module._free(outSizePtr);
-  return result;
+  return { buffer: result, w: ew, h: eh };
 }
 
 /* ---------- Noise Math (identical to prior single-thread version) ---------- */
@@ -650,11 +679,13 @@ self.onmessage = async function(e){
       gpuTransfer = [monoC.buffer, rC2.buffer, gC2.buffer, bC2.buffer, maskC.buffer];
     }
 
-    let jpegBuffer = null, jpegError = null;
+    let jpegBuffer = null, jpegError = null, jpegW = w, jpegH = h;
     if (msg.wantJpegExport) {
       try {
         const Module = await getJpegliModule();
-        jpegBuffer = encodeWithJpegli(Module, out, w, h, msg.jpegDistance || 1.0);
+        const result = encodeWithJpegli(Module, out, w, h, msg.jpegDistance || 1.0, !!msg.addBorder);
+        jpegBuffer = result.buffer;
+        jpegW = result.w; jpegH = result.h;
       } catch (err) {
         jpegError = (err && err.message) || String(err);
       }
@@ -674,7 +705,8 @@ self.onmessage = async function(e){
     if (jpegBuffer) transferList.push(jpegBuffer);
 
     self.postMessage(
-      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload, timing, jpeg: jpegBuffer, jpegError },
+      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload, timing,
+        jpeg: jpegBuffer, jpegError, jpegW, jpegH },
       transferList
     );
   }
@@ -1203,6 +1235,21 @@ function loadImage(file){
   image.onload = () => {
     window.__debugLog && window.__debugLog('Image loaded: ' + image.width + 'x' + image.height);
     let w = image.width, h = image.height;
+
+    // Safety cap: iOS Safari has historically had canvas-area limits (and,
+    // regardless of that, very large photos multiply memory pressure across
+    // every stage -- noise fields, GPU textures, jpegli's own WASM heap).
+    // Downscale before touching the canvas at all rather than risk a silent
+    // failure or a full tab crash on the largest photos (48MP ProRAW etc).
+    const MAX_PIXELS = 20000000; // ~20MP
+    if (w*h > MAX_PIXELS) {
+      const scale = Math.sqrt(MAX_PIXELS / (w*h));
+      const nw = Math.max(1, Math.round(w*scale)), nh = Math.max(1, Math.round(h*scale));
+      window.__debugLog && window.__debugLog(
+        `Image ${w}x${h} (${(w*h/1e6).toFixed(1)}MP) exceeds the ${MAX_PIXELS/1e6}MP safety cap -- downscaling to ${nw}x${nh} (${(nw*nh/1e6).toFixed(1)}MP) for stability.`
+      );
+      w = nw; h = nh;
+    }
     originalFileDimensions = { w, h };
 
     // We render at full native image resolution for maximum quality download!
@@ -1366,7 +1413,8 @@ document.getElementById("save-local").addEventListener("click", () => {
 /* ---------- Max Quality, Min Size JPG Download (jpegli) ---------- */
 document.getElementById("download").addEventListener("click", async () => {
   if (!hasImage) return;
-  window.__debugLog && window.__debugLog('Download clicked, requesting full-res render + jpegli encode...');
+  const addBorder = document.getElementById("add-border").checked;
+  window.__debugLog && window.__debugLog('Download clicked (border=' + addBorder + '), requesting full-res render + jpegli encode...');
   const btn = document.getElementById("download");
   const originalLabel = btn.textContent;
   btn.textContent = "Exporting...";
@@ -1376,19 +1424,24 @@ document.getElementById("download").addEventListener("click", async () => {
     const p = readParams();
     // Always export the full processed image (never the split-screen divider),
     // regardless of what's currently shown on screen. Doesn't touch canvas/UI state.
-    const msg = await workerRenderOnce(p, true, currentSeedId, false, { wantJpegExport: true, jpegDistance: 1.0 });
+    const msg = await workerRenderOnce(p, true, currentSeedId, false, { wantJpegExport: true, jpegDistance: 1.0, addBorder });
 
     let blob;
     if (msg.jpeg && !msg.jpegError) {
-      window.__debugLog && window.__debugLog('jpegli encode OK: ' + (msg.jpeg.byteLength/1024/1024).toFixed(2) + 'MB');
+      window.__debugLog && window.__debugLog('jpegli encode OK: ' + (msg.jpeg.byteLength/1024/1024).toFixed(2) + 'MB, ' + msg.jpegW + 'x' + msg.jpegH);
       blob = new Blob([msg.jpeg], { type: 'image/jpeg' });
     } else {
       window.__debugLog && window.__debugLog('jpegli unavailable (' + (msg.jpegError||'no jpeg in response') + '), falling back to OffscreenCanvas...', true);
-      const oc = new OffscreenCanvas(msg.w, msg.h);
+      const border = addBorder ? Math.round(Math.max(msg.w, msg.h) * 0.02) : 0;
+      const nw = msg.w + border*2, nh = msg.h + border*2;
+      const oc = new OffscreenCanvas(nw, nh);
       const octx = oc.getContext('2d');
-      octx.putImageData(new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h), 0, 0);
+      if (border > 0) { octx.fillStyle = '#fff'; octx.fillRect(0, 0, nw, nh); }
+      const tmp = new OffscreenCanvas(msg.w, msg.h);
+      tmp.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h), 0, 0);
+      octx.drawImage(tmp, border, border);
       blob = await oc.convertToBlob({ type: "image/jpeg", quality: 0.95 });
-      window.__debugLog && window.__debugLog('Fallback JPEG encoded (' + (blob.size/1024/1024).toFixed(2) + 'MB)');
+      window.__debugLog && window.__debugLog('Fallback JPEG encoded (' + (blob.size/1024/1024).toFixed(2) + 'MB, ' + nw + 'x' + nh + ')');
     }
 
     const url = URL.createObjectURL(blob);
