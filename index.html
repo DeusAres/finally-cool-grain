@@ -206,6 +206,24 @@
         if (isError) { box.style.display = 'block'; } // only auto-open on a real error
       }
       window.__debugLog = log;
+
+      // Capture ALL console.* output too, not just our own manual log()
+      // calls -- third-party code (the jpegli WASM module, browser runtime
+      // warnings) may log things we never explicitly instrumented.
+      ['log','warn','error','info'].forEach((method) => {
+        const orig = console[method];
+        console[method] = function(...args){
+          try {
+            const text = args.map(a => {
+              if (a instanceof Error) return a.stack || a.message;
+              if (typeof a === 'object') { try { return JSON.stringify(a); } catch(e){ return String(a); } }
+              return String(a);
+            }).join(' ');
+            log('[console.' + method + '] ' + text, method === 'error');
+          } catch(e) {}
+          orig.apply(console, args);
+        };
+      });
       btn.addEventListener('click', () => { render(); box.style.display = 'block'; });
       box.addEventListener('click', () => { box.style.display = 'none'; });
       copyBtn.addEventListener('click', (e) => {
@@ -264,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.9</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.10</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -431,12 +449,15 @@ function encodeWithJpegli(Module, rgbaOut, w, h, distance, addBorder){
     const bordered = addWhiteBorderRgb(rgb, w, h);
     rgb = bordered.rgb; ew = bordered.w; eh = bordered.h;
   }
+  console.log('jpegli: rgb ready ' + ew + 'x' + eh + ' (' + (rgb.length/1024/1024).toFixed(1) + 'MB), malloc\'ing WASM heap...');
   const inPtr = Module._malloc(rgb.length);
   Module.HEAPU8.set(rgb, inPtr);
   const outSizePtr = Module._malloc(4);
   const encode = Module.cwrap('jpegli_wasm_encode_rgb', 'number',
     ['number','number','number','number','number','number','number']);
+  console.log('jpegli: calling native encode (this is the riskiest single step)...');
   const outPtr = encode(inPtr, ew, eh, distance, 2, 1, outSizePtr);
+  console.log('jpegli: native encode returned, outPtr=' + outPtr);
   let result = null;
   if (outPtr) {
     const outSize = new DataView(Module.HEAPU8.buffer).getUint32(outSizePtr, true);
@@ -557,19 +578,40 @@ let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
 let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
 let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
 
+// Forward all console.* calls from inside the worker (where jpegli runs) to
+// the main thread's persistent log, since a worker's own console output is
+// otherwise invisible without a real devtools connection to that worker.
+['log','warn','error','info'].forEach((method) => {
+  const orig = console[method];
+  console[method] = function(...args){
+    try {
+      const text = args.map(a => {
+        if (a instanceof Error) return a.stack || a.message;
+        if (typeof a === 'object') { try { return JSON.stringify(a); } catch(e){ return String(a); } }
+        return String(a);
+      }).join(' ');
+      self.postMessage({ cmd:'log', text: '[worker console.' + method + '] ' + text, isError: method === 'error' });
+    } catch(e) {}
+    orig.apply(console, args);
+  };
+});
+
 self.onmessage = async function(e){
   const msg = e.data;
 
   if (msg.cmd === 'init') {
+    console.log('worker init: received ' + msg.w + 'x' + msg.h + ' (' + (msg.buffer.byteLength/1024/1024).toFixed(1) + 'MB buffer)');
     W = msg.w; H = msg.h;
     srcData = new Uint8ClampedArray(msg.buffer);
     const n = W*H, rC=new Float32Array(n), gC=new Float32Array(n), bC=new Float32Array(n);
     for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=srcData[i]; gC[px]=srcData[i+1]; bC[px]=srcData[i+2]; }
+    console.log('worker init: planes split, starting initial softening blur (3x boxBlur passes)...');
     blurredSrc = {
       r: new Uint8ClampedArray(boxBlur(rC,W,H,1.5)),
       g: new Uint8ClampedArray(boxBlur(gC,W,H,1.5)),
       b: new Uint8ClampedArray(boxBlur(bC,W,H,1.5))
     };
+    console.log('worker init: softening blur done');
     cachedRawNoise = null;
     cachedNoiseFields = null;
     cachedGrainDelta = null;
@@ -601,12 +643,14 @@ self.onmessage = async function(e){
     const needsRaw = forceHeavy ||
       lastRawParams.w !== w || lastRawParams.h !== h || lastRawParams.seedId !== seedId;
     if (needsRaw) {
+      console.log('render: Stage A0 generating fresh gaussian noise ' + w + 'x' + h + '...');
       cachedRawNoise = {
         r: makeNoiseField(w,h).slice(),
         g: makeNoiseField(w,h).slice(),
         b: makeNoiseField(w,h).slice()
       };
       lastRawParams = { w, h, seedId };
+      console.log('render: Stage A0 done');
     }
     const t1 = performance.now();
 
@@ -722,12 +766,16 @@ self.onmessage = async function(e){
     let jpegBuffer = null, jpegError = null, jpegW = w, jpegH = h;
     if (msg.wantJpegExport) {
       try {
+        console.log('jpegli: getting module (first call compiles/instantiates WASM)...');
         const Module = await getJpegliModule();
+        console.log('jpegli: module ready, encoding ' + w + 'x' + h + (msg.addBorder ? ' with border' : '') + '...');
         const result = encodeWithJpegli(Module, out, w, h, msg.jpegDistance || 1.0, !!msg.addBorder);
         jpegBuffer = result.buffer;
         jpegW = result.w; jpegH = result.h;
+        console.log('jpegli: encode returned, size=' + (jpegBuffer ? jpegBuffer.byteLength : 'null'));
       } catch (err) {
         jpegError = (err && err.message) || String(err);
+        console.error('jpegli: threw -- ' + jpegError);
       }
     }
 
@@ -813,6 +861,7 @@ const pendingReqs = new Map(); // reqId -> callback(msg)
 
 renderWorker.onmessage = (e) => {
   const msg = e.data;
+  if (msg.cmd === 'log') { window.__debugLog && window.__debugLog(msg.text, msg.isError); return; }
   if (msg.cmd === 'inited') { window.__debugLog && window.__debugLog('worker: inited'); return; }
   if (msg.cmd === 'blurredSrcReady') {
     window.__debugLog && window.__debugLog('worker: blurredSrcReady received, uploading base GPU textures...');
@@ -1292,6 +1341,7 @@ function loadImage(file){
       w = nw; h = nh;
     }
     originalFileDimensions = { w, h };
+    window.__debugLog && window.__debugLog('Setting canvas to ' + w + 'x' + h + ' (' + (w*h/1e6).toFixed(1) + 'MP)...');
 
     // We render at full native image resolution for maximum quality download!
     canvas.width = w;
@@ -1301,10 +1351,12 @@ function loadImage(file){
     canvas.style.width = w + 'px';
     canvas.style.height = h + 'px';
 
+    window.__debugLog && window.__debugLog('canvas.width/height set OK, calling drawImage...');
     ctx.drawImage(image, 0, 0, w, h);
+    window.__debugLog && window.__debugLog('drawImage OK, calling getImageData (this can fail silently on Safari for very large canvases)...');
     const imgData = ctx.getImageData(0,0,w,h);
     hasImage = true;
-    window.__debugLog && window.__debugLog('drawImage+getImageData OK, sending to worker...');
+    window.__debugLog && window.__debugLog('getImageData OK (' + (imgData.data.length/1024/1024).toFixed(1) + 'MB), sending to worker...');
 
     // Hand the raw pixels to the worker (zero-copy transfer); it owns all
     // grain-engine state (noise fields, blurred-source cache, etc) from here on.
