@@ -431,7 +431,7 @@ function rgbaToRgb(rgba, w, h){
 // print-mat / gallery frame look.
 function addWhiteBorderRgb(rgb, w, h){
   const longSide = Math.max(w, h);
-  const border = Math.round(longSide * 0.02);
+  const border = Math.round(longSide * 0.01);
   if (border <= 0) return { rgb, w, h };
   const nw = w + border*2, nh = h + border*2;
   const out = new Uint8Array(nw*nh*3).fill(255); // white
