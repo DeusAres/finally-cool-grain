@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.10</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.11</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -363,7 +363,7 @@
       <h3>Output <span id="dims-readout" style="color:var(--dim); font-size:9px;"></span></h3>
       <label style="display:flex; align-items:center; gap:6px; font-size:11px; color:var(--dim); margin-bottom:10px; cursor:pointer;">
         <input type="checkbox" id="add-border" style="accent-color:var(--safelight);">
-        Add white border (2%)
+        Add white border (1%)
       </label>
       <button id="download" class="pixel-btn primary" style="width:100%">Download Max Quality JPG</button>
       <div class="hist" id="hist"></div>
@@ -426,7 +426,7 @@ function rgbaToRgb(rgba, w, h){
   for (let i=0,px=0,j=0; px<n; px++, i+=4, j+=3){ rgb[j]=rgba[i]; rgb[j+1]=rgba[i+1]; rgb[j+2]=rgba[i+2]; }
   return rgb;
 }
-// Adds a uniform white border on all 4 sides, sized as 2% of the LONGER
+// Adds a uniform white border on all 4 sides, sized as 1% of the LONGER
 // side of the image (not each side's own dimension), matching a classic
 // print-mat / gallery frame look.
 function addWhiteBorderRgb(rgb, w, h){
@@ -485,6 +485,25 @@ function makeNoiseField(w,h){
   if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
   for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
   return scratchRaw; // caller must consume (copy) before generating the next field
+}
+// Chunked variant: same output as makeNoiseField, but yields control back to
+// the event loop periodically instead of running as one giant synchronous
+// block. On a large image this loop can run for several seconds straight;
+// this guards against any responsiveness-based watchdog on top of the
+// memory-based safety cap.
+const NOISE_CHUNK = 400000;
+async function makeNoiseFieldChunked(w,h,label){
+  const n = w*h;
+  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
+  for (let start=0; start<n; start+=NOISE_CHUNK){
+    const end = Math.min(n, start+NOISE_CHUNK);
+    for (let i=start;i<end;i++) scratchRaw[i] = gaussian();
+    if (end < n) {
+      if (label) console.log('noise-gen progress: ' + label + ' ' + Math.round(end/n*100) + '%');
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return scratchRaw;
 }
 let scratchClumpRaw = null, scratchClumpRawSize = -1;
 function makeClumpNoiseField(w,h){
@@ -644,11 +663,10 @@ self.onmessage = async function(e){
       lastRawParams.w !== w || lastRawParams.h !== h || lastRawParams.seedId !== seedId;
     if (needsRaw) {
       console.log('render: Stage A0 generating fresh gaussian noise ' + w + 'x' + h + '...');
-      cachedRawNoise = {
-        r: makeNoiseField(w,h).slice(),
-        g: makeNoiseField(w,h).slice(),
-        b: makeNoiseField(w,h).slice()
-      };
+      const rRaw = (await makeNoiseFieldChunked(w,h,'r')).slice();
+      const gRaw = (await makeNoiseFieldChunked(w,h,'g')).slice();
+      const bRaw = (await makeNoiseFieldChunked(w,h,'b')).slice();
+      cachedRawNoise = { r: rRaw, g: gRaw, b: bRaw };
       lastRawParams = { w, h, seedId };
       console.log('render: Stage A0 done');
     }
@@ -1331,7 +1349,7 @@ function loadImage(file){
     // every stage -- noise fields, GPU textures, jpegli's own WASM heap).
     // Downscale before touching the canvas at all rather than risk a silent
     // failure or a full tab crash on the largest photos (48MP ProRAW etc).
-    const MAX_PIXELS = 20000000; // ~20MP
+    const MAX_PIXELS = 12000000; // ~12MP -- lowered after a confirmed crash inside Stage A0 at 20MP
     if (w*h > MAX_PIXELS) {
       const scale = Math.sqrt(MAX_PIXELS / (w*h));
       const nw = Math.max(1, Math.round(w*scale)), nh = Math.max(1, Math.round(h*scale));
@@ -1525,7 +1543,7 @@ document.getElementById("download").addEventListener("click", async () => {
       blob = new Blob([msg.jpeg], { type: 'image/jpeg' });
     } else {
       window.__debugLog && window.__debugLog('jpegli unavailable (' + (msg.jpegError||'no jpeg in response') + '), falling back to OffscreenCanvas...', true);
-      const border = addBorder ? Math.round(Math.max(msg.w, msg.h) * 0.02) : 0;
+      const border = addBorder ? Math.round(Math.max(msg.w, msg.h) * 0.01) : 0;
       const nw = msg.w + border*2, nh = msg.h + border*2;
       const oc = new OffscreenCanvas(nw, nh);
       const octx = oc.getContext('2d');
