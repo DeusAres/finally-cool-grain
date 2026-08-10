@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.14</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.15</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -880,6 +880,7 @@ for(let k in els) vEls[k] = document.getElementById("v-" + k);
 
 let currentObjectUrl = null;
 let hasImage = false;
+let procW = 0, procH = 0; // resolution the worker processes/exports at (may exceed the on-screen canvas size)
 let originalFileDimensions = { w: 0, h: 0 };
 let originalFileName = "grain-pro-max-quality";
 let isSplitScreen = false;
@@ -1388,20 +1389,31 @@ function loadImage(file){
       w = nw; h = nh;
     }
     originalFileDimensions = { w, h };
-    window.__debugLog && window.__debugLog('Setting canvas to ' + w + 'x' + h + ' (' + (w*h/1e6).toFixed(1) + 'MP)...');
+    procW = w; procH = h; // resolution the worker actually processes/exports at
 
-    // We render at full native image resolution for maximum quality download!
-    canvas.width = w;
-    canvas.height = h;
+    // The on-screen canvas is capped MUCH smaller than the processing
+    // resolution. A canvas with a huge native pixel buffer forces the
+    // browser's own compositor to keep a texture that size in GPU memory
+    // for ANY CSS transform (our pan/zoom) regardless of visual scale --
+    // confirmed as a real crash trigger when zooming large photos. The full
+    // native resolution is still used for processing and export (jpegli);
+    // only the interactive display is downscaled.
+    const DISPLAY_MAX_DIM = 2000;
+    const dispScale = Math.min(1, DISPLAY_MAX_DIM / Math.max(w, h));
+    const dispW = Math.max(1, Math.round(w * dispScale)), dispH = Math.max(1, Math.round(h * dispScale));
+    window.__debugLog && window.__debugLog('Processing at ' + w + 'x' + h + ', display canvas capped to ' + dispW + 'x' + dispH + '...');
 
-    // Display size always native; zoom/pan handled via CSS transform
-    canvas.style.width = w + 'px';
-    canvas.style.height = h + 'px';
+    canvas.width = dispW;
+    canvas.height = dispH;
+    canvas.style.width = dispW + 'px';
+    canvas.style.height = dispH + 'px';
 
-    window.__debugLog && window.__debugLog('canvas.width/height set OK, calling drawImage...');
-    ctx.drawImage(image, 0, 0, w, h);
-    window.__debugLog && window.__debugLog('drawImage OK, calling getImageData (this can fail silently on Safari for very large canvases)...');
-    const imgData = ctx.getImageData(0,0,w,h);
+    window.__debugLog && window.__debugLog('canvas.width/height set OK, extracting full-res pixels via an offscreen canvas (never drawn on-screen)...');
+    const extractCanvas = new OffscreenCanvas(w, h);
+    const extractCtx = extractCanvas.getContext('2d');
+    extractCtx.drawImage(image, 0, 0, w, h);
+    window.__debugLog && window.__debugLog('offscreen drawImage OK, calling getImageData...');
+    const imgData = extractCtx.getImageData(0,0,w,h);
     hasImage = true;
     window.__debugLog && window.__debugLog('getImageData OK (' + (imgData.data.length/1024/1024).toFixed(1) + 'MB), sending to worker...');
 
@@ -1424,11 +1436,21 @@ function loadImage(file){
   image.src = currentObjectUrl;
 }
 
+let procCanvas = null, procCtx = null; // reused offscreen canvas for downscaling the worker's full-res result onto the small display canvas
 function drawWorkerResult(msg){
-  window.__debugLog && window.__debugLog('drawWorkerResult: calling putImageData ' + msg.w + 'x' + msg.h + '...');
+  window.__debugLog && window.__debugLog('drawWorkerResult: staging ' + msg.w + 'x' + msg.h + ' into offscreen, then downscaling to ' + canvas.width + 'x' + canvas.height + '...');
+  if (!procCanvas || procCanvas.width !== msg.w || procCanvas.height !== msg.h) {
+    procCanvas = new OffscreenCanvas(msg.w, msg.h);
+    procCtx = procCanvas.getContext('2d');
+  }
   const imgData = new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h);
-  ctx.putImageData(imgData, 0, 0);
-  window.__debugLog && window.__debugLog('drawWorkerResult: putImageData OK');
+  procCtx.putImageData(imgData, 0, 0);
+  // The VISIBLE canvas stays at its small capped resolution always; only the
+  // offscreen staging canvas ever holds full-res data, so the browser's
+  // compositor never has to keep a huge texture around for our pan/zoom.
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.drawImage(procCanvas, 0, 0, canvas.width, canvas.height);
+  window.__debugLog && window.__debugLog('drawWorkerResult: draw OK');
   for (let i=0; i<24; i++){
     histDivs[i].style.height = Math.max(2, (msg.bins[i]/msg.maxCount)*40) + "px";
   }
