@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.11</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.13</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -514,17 +514,17 @@ function makeClumpNoiseField(w,h){
 }
 let scratchB = null, scratchBSize = -1;
 let scratchClumpB = null, scratchClumpBSize = -1;
-function grainBlur(src,w,h,radius){
+async function grainBlur(src,w,h,radius){
   if (radius<=0) return src.slice();
   const r0 = Math.floor(radius), frac = radius-r0;
-  const lo = r0<1 ? src.slice() : boxBlur(src,w,h,r0);
-  const hi = frac>0.05 ? boxBlur(src,w,h,r0+1) : lo;
+  const lo = r0<1 ? src.slice() : await boxBlur(src,w,h,r0);
+  const hi = frac>0.05 ? await boxBlur(src,w,h,r0+1) : lo;
   const factor = Math.sqrt(1+radius) * 0.85; // restore contrast lost to averaging at high radius
   const out = new Float32Array(w*h);
   for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
   return out;
 }
-function boxBlur(src,w,h,radius,useClumpPool){
+async function boxBlur(src,w,h,radius,useClumpPool){
   if (radius < 0.5) return src.slice();
   let a = src.slice();
   const n = w*h;
@@ -556,13 +556,14 @@ function boxBlur(src,w,h,radius,useClumpPool){
         acc += b[(y+r+1<0?0:(y+r+1>=h?h-1:y+r+1))*w+x];
       }
     }
+    if (pass < 2) await new Promise(res => setTimeout(res, 0)); // yield between passes on large images
   }
   return a;
 }
-function makeClumpMask(w,h,strength){
+async function makeClumpMask(w,h,strength){
   if (strength <= 0.001) return null;
   const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
-  let coarse = boxBlur(makeClumpNoiseField(cw,ch), cw, ch, 1.2, true);
+  let coarse = await boxBlur(makeClumpNoiseField(cw,ch), cw, ch, 1.2, true);
   const mask = new Float32Array(w*h);
   for (let y=0;y<h;y++){
     const fy = (y/(h-1))*(ch-1);
@@ -626,9 +627,9 @@ self.onmessage = async function(e){
     for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=srcData[i]; gC[px]=srcData[i+1]; bC[px]=srcData[i+2]; }
     console.log('worker init: planes split, starting initial softening blur (3x boxBlur passes)...');
     blurredSrc = {
-      r: new Uint8ClampedArray(boxBlur(rC,W,H,1.5)),
-      g: new Uint8ClampedArray(boxBlur(gC,W,H,1.5)),
-      b: new Uint8ClampedArray(boxBlur(bC,W,H,1.5))
+      r: new Uint8ClampedArray(await boxBlur(rC,W,H,1.5)),
+      g: new Uint8ClampedArray(await boxBlur(gC,W,H,1.5)),
+      b: new Uint8ClampedArray(await boxBlur(bC,W,H,1.5))
     };
     console.log('worker init: softening blur done');
     cachedRawNoise = null;
@@ -679,14 +680,19 @@ self.onmessage = async function(e){
       lastBlurParams.clump !== p.clump;
 
     if (needsBlur) {
-      const rN = grainBlur(cachedRawNoise.r, w, h, p.size);
-      const gN = grainBlur(cachedRawNoise.g, w, h, p.size);
-      const bN = grainBlur(cachedRawNoise.b, w, h, p.size);
+      console.log('render: Stage A blurring noise (r)...');
+      const rN = await grainBlur(cachedRawNoise.r, w, h, p.size);
+      console.log('render: Stage A blurring noise (g)...');
+      const gN = await grainBlur(cachedRawNoise.g, w, h, p.size);
+      console.log('render: Stage A blurring noise (b)...');
+      const bN = await grainBlur(cachedRawNoise.b, w, h, p.size);
       const monoN = new Float32Array(w*h);
       for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
-      const maskN = makeClumpMask(w,h,p.clump) || new Float32Array(w*h).fill(1);
+      console.log('render: Stage A computing clump mask...');
+      const maskN = (await makeClumpMask(w,h,p.clump)) || new Float32Array(w*h).fill(1);
       cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: maskN };
       lastBlurParams = { size:p.size, clump:p.clump, w, h, seedId };
+      console.log('render: Stage A done');
     }
     const t2 = performance.now();
 
@@ -697,28 +703,36 @@ self.onmessage = async function(e){
       lastComposeParams.w !== w || lastComposeParams.h !== h || lastComposeParams.seedId !== seedId;
 
     if (needsCompose) {
+      console.log('render: Stage B computing weight/mix for ' + w + 'x' + h + '...');
       updatePowLUT(p.bias);
       const cfM = cachedNoiseFields.mask;
       const monoA=cachedNoiseFields.mono, rA=cachedNoiseFields.r, gA=cachedNoiseFields.g, bA=cachedNoiseFields.b;
       const chanAmt=p.chan, invChan=1-chanAmt;
       const n = w*h;
       const gR=new Float32Array(n), gG=new Float32Array(n), gB=new Float32Array(n);
-      for (let i=0,px=0; px<n; px++, i+=4){
-        const r0=src[i], g0=src[i+1], b0=src[i+2];
-        const lum=(r0+g0+b0)/(3*255);
-        const weight = powLUT[(lum*255+0.5)|0];
-        const cf = cfM ? cfM[px] : 1;
-        const wcf = weight*cf;
-        const m = monoA[px]*invChan;
-        gR[px] = (m+rA[px]*chanAmt)*wcf;
-        gG[px] = (m+gA[px]*chanAmt)*wcf;
-        gB[px] = (m+bA[px]*chanAmt)*wcf;
+      const CHUNK = 400000;
+      for (let start=0; start<n; start+=CHUNK){
+        const end = Math.min(n, start+CHUNK);
+        for (let px=start,i=start*4; px<end; px++, i+=4){
+          const r0=src[i], g0=src[i+1], b0=src[i+2];
+          const lum=(r0+g0+b0)/(3*255);
+          const weight = powLUT[(lum*255+0.5)|0];
+          const cf = cfM ? cfM[px] : 1;
+          const wcf = weight*cf;
+          const m = monoA[px]*invChan;
+          gR[px] = (m+rA[px]*chanAmt)*wcf;
+          gG[px] = (m+gA[px]*chanAmt)*wcf;
+          gB[px] = (m+bA[px]*chanAmt)*wcf;
+        }
+        if (end < n) { console.log('Stage B progress: ' + Math.round(end/n*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
       }
       cachedGrainDelta = { r:gR, g:gG, b:gB };
       lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId };
+      console.log('render: Stage B done');
     }
 
     // Stage C (cheap): intensity-driven softening blend + grain amplitude. Runs every render.
+    console.log('render: Stage C compositing final image...');
     const out = new Uint8ClampedArray(w*h*4);
     const brR=blurredSrc.r, brG=blurredSrc.g, brB=blurredSrc.b;
     const gDR=cachedGrainDelta.r, gDG=cachedGrainDelta.g, gDB=cachedGrainDelta.b;
@@ -732,39 +746,46 @@ self.onmessage = async function(e){
     let maxCount=1;
     let col=0;
 
-    for (let i=0, px=0; px<w*h; px++, i+=4, col++){
-      if (col===w) col=0;
-      let r0=src[i], g0=src[i+1], b0=src[i+2];
-      if (isSplitScreen && col<intHalfW){
-        out[i]=r0; out[i+1]=g0; out[i+2]=b0; out[i+3]=src[i+3];
-        continue;
-      }
-      if (blendAmt>0){
-        r0 += (brR[px]-r0)*blendAmt;
-        g0 += (brG[px]-g0)*blendAmt;
-        b0 += (brB[px]-b0)*blendAmt;
-      }
-      if (liftAmt !== 0){
-        // Single bidirectional control: positive lifts shadows (fog/faded
-        // look, raises the black floor), negative compresses/crushes them
-        // (more punch). Effect scales with how dark the pixel already is,
-        // so highlights stay essentially untouched either way.
-        r0 = r0 + liftAmt*(255-r0);
-        g0 = g0 + liftAmt*(255-g0);
-        b0 = b0 + liftAmt*(255-b0);
-      }
-      out[i]   = clamp8(r0 + gDR[px]*amp);
-      out[i+1] = clamp8(g0 + gDG[px]*amp);
-      out[i+2] = clamp8(b0 + gDB[px]*amp);
-      out[i+3] = src[i+3];
+    const STAGE_C_CHUNK = 400000;
+    const totalPx = w*h;
+    for (let chunkStart=0; chunkStart<totalPx; chunkStart+=STAGE_C_CHUNK){
+      const chunkEnd = Math.min(totalPx, chunkStart+STAGE_C_CHUNK);
+      for (let px=chunkStart, i=chunkStart*4; px<chunkEnd; px++, i+=4, col++){
+        if (col===w) col=0;
+        let r0=src[i], g0=src[i+1], b0=src[i+2];
+        if (isSplitScreen && col<intHalfW){
+          out[i]=r0; out[i+1]=g0; out[i+2]=b0; out[i+3]=src[i+3];
+          continue;
+        }
+        if (blendAmt>0){
+          r0 += (brR[px]-r0)*blendAmt;
+          g0 += (brG[px]-g0)*blendAmt;
+          b0 += (brB[px]-b0)*blendAmt;
+        }
+        if (liftAmt !== 0){
+          // Single bidirectional control: positive lifts shadows (fog/faded
+          // look, raises the black floor), negative compresses/crushes them
+          // (more punch). Effect scales with how dark the pixel already is,
+          // so highlights stay essentially untouched either way.
+          r0 = r0 + liftAmt*(255-r0);
+          g0 = g0 + liftAmt*(255-g0);
+          b0 = b0 + liftAmt*(255-b0);
+        }
+        out[i]   = clamp8(r0 + gDR[px]*amp);
+        out[i+1] = clamp8(g0 + gDG[px]*amp);
+        out[i+2] = clamp8(b0 + gDB[px]*amp);
+        out[i+3] = src[i+3];
 
-      if (px % histStep === 0 && (!isSplitScreen || col>=intHalfW)){
-        const outLum=(out[i]+out[i+1]+out[i+2])/3;
-        const bin=Math.min(23, Math.floor(outLum/256*24));
-        bins[bin]++;
-        if(bins[bin]>maxCount) maxCount=bins[bin];
+        if (px % histStep === 0 && (!isSplitScreen || col>=intHalfW)){
+          const outLum=(out[i]+out[i+1]+out[i+2])/3;
+          const bin=Math.min(23, Math.floor(outLum/256*24));
+          bins[bin]++;
+          if(bins[bin]>maxCount) maxCount=bins[bin];
+        }
       }
+      if (chunkEnd < totalPx) { console.log('Stage C progress: ' + Math.round(chunkEnd/totalPx*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
     }
+    console.log('render: Stage C done');
 
     if (isSplitScreen){
       for (let y=0;y<h;y++){
@@ -775,10 +796,12 @@ self.onmessage = async function(e){
 
     let gpuPayload = null, gpuTransfer = [];
     if (needsBlur && wantGpuData) {
+      console.log('render: building GPU payload (slicing noise fields for transfer)...');
       const monoC = cachedNoiseFields.mono.slice(), rC2 = cachedNoiseFields.r.slice(),
             gC2 = cachedNoiseFields.g.slice(), bC2 = cachedNoiseFields.b.slice(), maskC = cachedNoiseFields.mask.slice();
       gpuPayload = { mono: monoC.buffer, r: rC2.buffer, g: gC2.buffer, b: bC2.buffer, mask: maskC.buffer };
       gpuTransfer = [monoC.buffer, rC2.buffer, gC2.buffer, bC2.buffer, maskC.buffer];
+      console.log('render: GPU payload ready');
     }
 
     let jpegBuffer = null, jpegError = null, jpegW = w, jpegH = h;
@@ -810,11 +833,13 @@ self.onmessage = async function(e){
     if (gpuPayload) transferList.push(...gpuTransfer);
     if (jpegBuffer) transferList.push(jpegBuffer);
 
+    console.log('render: posting final message back to main thread (' + (out.buffer.byteLength/1024/1024).toFixed(1) + 'MB RGBA' + (jpegBuffer ? ' + '+(jpegBuffer.byteLength/1024/1024).toFixed(1)+'MB JPEG' : '') + ')...');
     self.postMessage(
       { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload, timing,
         jpeg: jpegBuffer, jpegError, jpegW, jpegH },
       transferList
     );
+    console.log('render: postMessage sent OK');
   }
 };
 </script>
@@ -1396,8 +1421,10 @@ function loadImage(file){
 }
 
 function drawWorkerResult(msg){
+  window.__debugLog && window.__debugLog('drawWorkerResult: calling putImageData ' + msg.w + 'x' + msg.h + '...');
   const imgData = new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h);
   ctx.putImageData(imgData, 0, 0);
+  window.__debugLog && window.__debugLog('drawWorkerResult: putImageData OK');
   for (let i=0; i<24; i++){
     histDivs[i].style.height = Math.max(2, (msg.bins[i]/msg.maxCount)*40) + "px";
   }
