@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.17</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.18</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -1502,7 +1502,11 @@ function sendToWorker(p, forceHeavy){
       sendToWorker(next.p, next.forceHeavy);
     }
   });
-  renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen });
+  renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen,
+    // GPU preview is disabled, so don't make the worker slice and transfer the
+    // five full-res noise/mask arrays (~20 B/px, ~240MB on a 12MP image) that
+    // nothing would consume.
+    wantGpuData: false });
 }
 
 function requestRender(forceHeavy = false){
