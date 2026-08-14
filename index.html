@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.18</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.19</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -350,8 +350,8 @@
         <input type="range" id="bias" min="20" max="150" value="60">
       </div>
       <div class="row">
-        <div class="label"><span>Shadow Lift / Compress</span><span class="val" id="v-lift">0</span></div>
-        <input type="range" id="lift" min="-50" max="50" value="0">
+        <div class="label"><span>Shadow Lift</span><span class="val" id="v-lift">0</span></div>
+        <input type="range" id="lift" min="0" max="50" value="0">
       </div>
       <div class="row">
         <div class="label"><span>Color Independence</span><span class="val" id="v-chan">70</span></div>
@@ -383,7 +383,7 @@
       <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Ricalcola il blur.</li>
       <li><strong>Clumping:</strong> Aggregazione chimica realistica. Ricalcola il blur.</li>
       <li><strong>Shadow Bias:</strong> Concentrazione della grana nelle ombre.</li>
-      <li><strong>Shadow Lift / Compress:</strong> Solleva (+) o comprime (-) le ombre. Effetto minimo sulle alte luci.</li>
+      <li><strong>Shadow Lift:</strong> Toe filmico: solleva il pavimento del nero comprimendo le ombre. Mezzitoni e alte luci non toccati.</li>
       <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
     </ul>
   </div>
@@ -761,7 +761,8 @@ self.onmessage = async function(e){
     const gDR=cachedGrainDelta.r, gDG=cachedGrainDelta.g, gDB=cachedGrainDelta.b;
     const amp = p.intensity*0.9;
     const blendAmt = Math.min(1,p.intensity/100)*0.22;
-    const liftAmt = p.lift || 0;
+    const liftL = Math.max(0, p.lift || 0) * 255;  // pavimento del nero in 0..255
+    const invK  = liftL > 0 ? 0.30 / liftL : 0;    // 1/K, ginocchio K = L/0.30
     const halfW=w/2, intHalfW=Math.floor(halfW);
 
     const bins = new Array(24).fill(0);
@@ -785,14 +786,16 @@ self.onmessage = async function(e){
           g0 += (brG[px]-g0)*blendAmt;
           b0 += (brB[px]-b0)*blendAmt;
         }
-        if (liftAmt !== 0){
-          // Single bidirectional control: positive lifts shadows (fog/faded
-          // look, raises the black floor), negative compresses/crushes them
-          // (more punch). Effect scales with how dark the pixel already is,
-          // so highlights stay essentially untouched either way.
-          r0 = r0 + liftAmt*(255-r0);
-          g0 = g0 + liftAmt*(255-g0);
-          b0 = b0 + liftAmt*(255-b0);
+        if (liftL > 0){
+          // Film toe: f(x) = x + L*(1-x/K)^2 for x < K, identity above.
+          // Raises the black floor to L while compressing the shadow range
+          // into it (slope at x=0 is a constant 0.4 => 2.5:1). K scales with
+          // L, so the effect is strictly confined below the knee and midtones
+          // and highlights are mathematically untouched.
+          let d;
+          d = 1 - r0*invK; if (d > 0) r0 += liftL*d*d;
+          d = 1 - g0*invK; if (d > 0) g0 += liftL*d*d;
+          d = 1 - b0*invK; if (d > 0) b0 += liftL*d*d;
         }
         out[i]   = clamp8(r0 + gDR[px]*amp);
         out[i+1] = clamp8(g0 + gDG[px]*amp);
@@ -888,9 +891,9 @@ const presets = {
   '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0 },
   kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0 },
   hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 8 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20 },
   heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 7, chan: 72 }
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -1040,6 +1043,7 @@ function initGL(){
       uniform float uAmp;
       uniform float uBlendAmt;
       uniform float uLift;
+      uniform float uInvK;
       uniform float uSplit;
       out vec4 fragColor;
       void main(){
@@ -1060,7 +1064,8 @@ function initGL(){
         );
         vec3 blur = texture(uBlur, uv).rgb;
         vec3 base = mix(src.rgb, blur, uBlendAmt);
-        base = base + uLift*(1.0-base);
+        vec3 toe = max(vec3(0.0), 1.0 - base*uInvK);
+        base = base + uLift*toe*toe;
         vec3 result = base + (grain * uAmp) * (1.0/255.0);
         fragColor = vec4(clamp(result, 0.0, 1.0), src.a);
       }`;
@@ -1105,6 +1110,7 @@ function initGL(){
       uAmp: gl.getUniformLocation(glProg,'uAmp'),
       uBlendAmt: gl.getUniformLocation(glProg,'uBlendAmt'),
       uLift: gl.getUniformLocation(glProg,'uLift'),
+      uInvK: gl.getUniformLocation(glProg,'uInvK'),
       uSplit: gl.getUniformLocation(glProg,'uSplit'),
     };
 
@@ -1186,7 +1192,8 @@ function drawGPUPreview(p, splitScreen){
     gl.uniform1f(glUniforms.uChan, p.chan);
     gl.uniform1f(glUniforms.uAmp, p.intensity*0.9);
     gl.uniform1f(glUniforms.uBlendAmt, Math.min(1,p.intensity/100)*0.22);
-    gl.uniform1f(glUniforms.uLift, p.lift || 0);
+    gl.uniform1f(glUniforms.uLift, Math.max(0, p.lift || 0));
+    gl.uniform1f(glUniforms.uInvK, (p.lift || 0) > 0 ? 0.30 / p.lift : 0);
     gl.uniform1f(glUniforms.uSplit, splitScreen ? 1.0 : 0.0);
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
     // GPU canvas renders at a capped internal resolution but is displayed
@@ -1221,7 +1228,7 @@ function readParams(){
     size: +els.size.value / 10,      
     clump: +els.clump.value / 100,
     bias: +els.bias.value / 100,     
-    lift: +els.lift.value / 200, // slider -50..50 -> -0.25..0.25 (kept subtle on purpose)
+    lift: +els.lift.value * 0.0024, // slider 0..50 -> black floor 0..0.12 (~31/255)
     chan: +els.chan.value / 100,
   };
 }
