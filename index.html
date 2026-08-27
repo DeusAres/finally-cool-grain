@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.19</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.20</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -316,6 +316,8 @@
         <option value="hp5">Ilford HP5 Plus 400 (B&W)</option>
         <option value="portra800">Portra 800 (Color Chunky)</option>
         <option value="heavy">Push Process (Heavy Grain)</option>
+        <option value="ccdclean">CCD Clean (Declutter)</option>
+        <option value="cybershot">Cybershot (Strong Declutter)</option>
         <option value="saved1">Saved Custom 1</option>
       </select>
       <div class="tools-row">
@@ -324,6 +326,22 @@
       </div>
       <div class="tools-row">
         <button id="save-local" class="pixel-btn" style="flex:1">Save Local</button>
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>CCD Clean <span style="color:var(--dim); font-size:9px;">pre-grana</span></h3>
+      <div class="row">
+        <div class="label"><span>Anti-Alias (OLPF)</span><span class="val" id="v-olpf">0</span></div>
+        <input type="range" id="olpf" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <div class="label"><span>Declutter</span><span class="val" id="v-detail">0</span></div>
+        <input type="range" id="detail" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <div class="label"><span>Chroma Clean</span><span class="val" id="v-chroma">0</span></div>
+        <input type="range" id="chroma" min="0" max="100" value="0">
       </div>
     </div>
 
@@ -385,6 +403,14 @@
       <li><strong>Shadow Bias:</strong> Concentrazione della grana nelle ombre.</li>
       <li><strong>Shadow Lift:</strong> Toe filmico: solleva il pavimento del nero comprimendo le ombre. Mezzitoni e alte luci non toccati.</li>
       <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
+    </ul>
+    <h2 style="margin-top:22px">CCD Clean</h2>
+    <p>Stadio opzionale che gira <em>prima</em> della grana. Serve a togliere lo "sbratto" digitale che i sensori piccoli producono sul dettaglio ad altissima frequenza (fogliame, ghiaia, riflessi sull'acqua), lasciando stare pelle, cielo e bordi netti. A 0 su tutti e tre gli slider non tocca assolutamente nulla.</p>
+    <ul>
+      <li><strong>Anti-Alias (OLPF):</strong> simula il filtro passa-basso ottico che i sensori CCD avevano davanti e i telefoni non hanno. È la causa fisica dell'aliasing sul fogliame. Sfocatura sub-pixel su tutta l'immagine (0&rarr;1.1px di sigma).</li>
+      <li><strong>Declutter:</strong> separa struttura e texture con un guided filter e attenua la texture <em>solo</em> dove la densità di gradiente è alta. Un bordo netto ha gradiente forte su una linea sola; il fogliame ce l'ha ovunque: è questo che li distingue, non il contrasto. Per questo i bordi restano, la confusione no.</li>
+      <li><strong>Chroma Clean:</strong> sfoca solo Cb/Cr nelle zone dense, lasciando intatta la luminanza. È dove sta gran parte del "confuso" cromatico del digitale; i CCD ne avevano molto meno.</li>
+      <li>Costo: ~0.4s per 2MP. Ha una cache sua, quindi muovere gli slider della grana non lo fa rigirare.</li>
     </ul>
   </div>
 </div>
@@ -490,6 +516,225 @@ function encodeWithJpegli(Module, rgbaOut, w, h, distance, addBorder, progressiv
     Module._free(rowPtr);
     Module._free(outSizePtr);
   }
+}
+
+/* ============================================================================
+   Stage D -- "CCD Clean": pre-grain declutter. Runs BEFORE the grain pipeline
+   and produces a cleaned copy of the source that stages B and C then consume.
+
+   Goal: kill the "digital pixel mush" small-sensor phone cameras produce in
+   high-frequency content (foliage, gravel, water sparkle) while leaving clean
+   low-frequency areas (skin, sky, walls) and genuine hard edges alone.
+
+   Why a bilateral/guided filter ALONE does not work: it preserves whatever has
+   high local variance -- and foliage has high local variance, exactly like a
+   hard edge. So on its own it protects precisely the thing we want to soften.
+
+   The discriminator used here is gradient DENSITY, not gradient magnitude:
+     hard edge -> large |grad| on a thin line, small across the neighbourhood
+     foliage   -> large |grad| almost everywhere in the neighbourhood
+   density = boxMean(soft_threshold(|grad Y|), DEN_R). That map then (a) widens
+   the guided filter's epsilon where density is high, so dense texture is
+   treated as texture rather than as structure, and (b) scales how much of the
+   extracted texture is actually removed.
+
+   Pipeline: RGB -> YCbCr (exactly invertible) -> OLPF (binomial 3-tap xN,
+   standing in for the optical low-pass filter CCD-era sensors had and phones
+   do not) -> density map -> guided filter on Y with density-adaptive epsilon,
+   texture attenuated by density -> chroma blur blended by density -> RGB.
+
+   Processed in horizontal bands with overlap: scratch memory is ~9 float
+   planes per (width x band) instead of per (width x height) -- 31MB instead of
+   419MB on a 12MP photo. The overlap is >= the analytic vertical reach of the
+   whole chain, so interior rows are bit-identical to whole-image processing
+   (verified against a whole-image reference; any shortfall here would show up
+   as horizontal seams).
+   ========================================================================== */
+const CC_GF_R     = 2;     // guided filter radius (px)
+const CC_GF_EPS   = 900;   // base edge threshold in 0..255 luma units, (30)^2
+const CC_GF_EPS_K = 2.5;   // epsilon multiplier at full density
+const CC_DEN_R    = 6;     // density window radius (px)
+const CC_GRAD_LO  = 6;     // |grad| below this = flat
+const CC_GRAD_HI  = 25;    // |grad| above this = detailed
+const CC_DEN_LO   = 0.25;  // density below this = isolated edge
+const CC_DEN_HI   = 0.70;  // density above this = texture field
+const CC_CHROMA_R = 4;     // chroma blur radius (px)
+const CC_DETAIL_MAX = 0.60;// texture removed at slider 100 + full density
+const CC_BAND_ROWS  = 192; // output rows per band
+
+function ccRound8(v){
+  // Rounding, NOT truncation: truncation would darken every channel by up to
+  // 1 LSB and break the identity case (all three sliders at 0 => exact no-op).
+  return v <= 0 ? 0 : (v >= 255 ? 255 : (v + 0.5) | 0);
+}
+function ccStep(lo, hi, v){
+  let t = (v - lo) / (hi - lo);
+  if (t <= 0) return 0;
+  if (t >= 1) return 1;
+  return t * t * (3 - 2 * t);
+}
+function ccParams(olpf, detail, chroma){
+  const sigma = olpf * 1.1;              // target gaussian sigma, px
+  let passes = 0, a = 0;
+  if (sigma > 1e-4){
+    // N passes of a 3-tap [a, 1-2a, a] kernel give variance N*2a, so take the
+    // smallest N that keeps a <= 0.25 (0.25 = the full binomial [1 2 1]/4).
+    passes = Math.max(1, Math.ceil(2 * sigma * sigma));
+    a = Math.min(0.25, (sigma * sigma) / (2 * passes));
+  }
+  return { olpfPasses: passes, olpfA: a,
+           detailAmt: detail * CC_DETAIL_MAX, chromaAmt: chroma,
+           active: passes > 0 || detail > 0 || chroma > 0 };
+}
+function ccPad(P){
+  return P.olpfPasses + Math.max(2*CC_GF_R, CC_GF_R + CC_DEN_R + 1, CC_CHROMA_R) + 2;
+}
+// Single-pass separable box mean, clamped at the block edges.
+// dst may alias src: the vertical pass reads only from tmp.
+function ccBoxMean(src, dst, tmp, w, bh, r){
+  if (r < 1){ if (dst !== src) dst.set(src.subarray(0, w*bh)); return; }
+  const inv = 1/(2*r+1);
+  for (let y=0;y<bh;y++){
+    const row=y*w; let acc=0;
+    for (let x=-r;x<=r;x++) acc += src[row + (x<0?0:(x>=w?w-1:x))];
+    for (let x=0;x<w;x++){
+      tmp[row+x] = acc*inv;
+      acc -= src[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
+      acc += src[row + (x+r+1>=w?w-1:x+r+1)];
+    }
+  }
+  for (let x=0;x<w;x++){
+    let acc=0;
+    for (let y=-r;y<=r;y++) acc += tmp[(y<0?0:(y>=bh?bh-1:y))*w+x];
+    for (let y=0;y<bh;y++){
+      dst[y*w+x] = acc*inv;
+      acc -= tmp[(y-r<0?0:(y-r>=bh?bh-1:y-r))*w+x];
+      acc += tmp[(y+r+1>=bh?bh-1:y+r+1)*w+x];
+    }
+  }
+}
+// One separable 3-tap binomial pass, in place via tmp.
+function ccTap3(p, tmp, w, bh, a){
+  const c = 1 - 2*a;
+  for (let y=0;y<bh;y++){
+    const row=y*w;
+    for (let x=0;x<w;x++){
+      const l = p[row + (x>0?x-1:0)], r = p[row + (x<w-1?x+1:w-1)];
+      tmp[row+x] = a*l + c*p[row+x] + a*r;
+    }
+  }
+  for (let y=0;y<bh;y++){
+    const row=y*w, up=(y>0?y-1:0)*w, dn=(y<bh-1?y+1:bh-1)*w;
+    for (let x=0;x<w;x++) p[row+x] = a*tmp[up+x] + c*tmp[row+x] + a*tmp[dn+x];
+  }
+}
+function ccAlloc(w, bh){
+  const n = w*bh;
+  return { Y:new Float32Array(n), cb:new Float32Array(n), cr:new Float32Array(n),
+           cbB:new Float32Array(n), crB:new Float32Array(n),
+           m1:new Float32Array(n), m2:new Float32Array(n),
+           ent:new Float32Array(n), tmp:new Float32Array(n) };
+}
+// Process rows [y0,y1) of the image, reading padded rows [ys,ye).
+function ccBand(src, out, w, ys, ye, y0, y1, P, buf){
+  const bh = ye - ys, n = w*bh;
+  const Y=buf.Y, cb=buf.cb, cr=buf.cr, cbB=buf.cbB, crB=buf.crB,
+        m1=buf.m1, m2=buf.m2, ent=buf.ent, tmp=buf.tmp;
+
+  // RGB -> YCbCr, offset form (cb = B-Y, cr = R-Y) so the inverse is exact.
+  for (let y=0;y<bh;y++){
+    let i=(ys+y)*w*4, o=y*w;
+    for (let x=0;x<w;x++, i+=4, o++){
+      const R=src[i], G=src[i+1], B=src[i+2];
+      const yy = 0.299*R + 0.587*G + 0.114*B;
+      Y[o]=yy; cb[o]=B-yy; cr[o]=R-yy;
+    }
+  }
+
+  for (let p=0;p<P.olpfPasses;p++){
+    ccTap3(Y, tmp, w, bh, P.olpfA);
+    ccTap3(cb, tmp, w, bh, P.olpfA);
+    ccTap3(cr, tmp, w, bh, P.olpfA);
+  }
+
+  if (P.detailAmt > 0 || P.chromaAmt > 0){
+    for (let y=0;y<bh;y++){
+      const row=y*w, up=(y>0?y-1:0)*w, dn=(y<bh-1?y+1:bh-1)*w;
+      for (let x=0;x<w;x++){
+        const gx = Y[row + (x<w-1?x+1:w-1)] - Y[row + (x>0?x-1:0)];
+        const gy = Y[dn+x] - Y[up+x];
+        const g = (gx<0?-gx:gx)*0.5 + (gy<0?-gy:gy)*0.5;
+        m1[row+x] = ccStep(CC_GRAD_LO, CC_GRAD_HI, g);
+      }
+    }
+    ccBoxMean(m1, m1, tmp, w, bh, CC_DEN_R);
+    for (let i=0;i<n;i++) ent[i] = ccStep(CC_DEN_LO, CC_DEN_HI, m1[i]);
+  }
+
+  if (P.detailAmt > 0){
+    ccBoxMean(Y, m1, tmp, w, bh, CC_GF_R);            // meanI
+    for (let i=0;i<n;i++) m2[i] = Y[i]*Y[i];
+    ccBoxMean(m2, m2, tmp, w, bh, CC_GF_R);           // meanII
+    for (let i=0;i<n;i++){
+      const mi = m1[i];
+      let v = m2[i] - mi*mi; if (v < 0) v = 0;
+      const a = v / (v + CC_GF_EPS*(1 + CC_GF_EPS_K*ent[i]));
+      m2[i] = a;                 // a
+      m1[i] = mi*(1 - a);        // b
+    }
+    ccBoxMean(m2, m2, tmp, w, bh, CC_GF_R);           // meanA
+    ccBoxMean(m1, m1, tmp, w, bh, CC_GF_R);           // meanB
+  }
+
+  if (P.chromaAmt > 0){
+    ccBoxMean(cb, cbB, tmp, w, bh, CC_CHROMA_R);
+    ccBoxMean(cr, crB, tmp, w, bh, CC_CHROMA_R);
+  }
+
+  const dAmt = P.detailAmt, cAmt = P.chromaAmt;
+  for (let y=y0-ys; y<y1-ys; y++){
+    let o=y*w, i=(ys+y)*w*4;
+    for (let x=0;x<w;x++, o++, i+=4){
+      const yy = Y[o];
+      let yOut = yy;
+      if (dAmt > 0){
+        const q = m2[o]*yy + m1[o];
+        yOut = q + (yy - q)*(1 - dAmt*ent[o]);
+      }
+      let cbO = cb[o], crO = cr[o];
+      if (cAmt > 0){
+        const f = cAmt*(0.4 + 0.6*ent[o]);
+        cbO += (cbB[o]-cbO)*f;
+        crO += (crB[o]-crO)*f;
+      }
+      const R = yOut + crO;
+      const B = yOut + cbO;
+      const G = (yOut - 0.299*R - 0.114*B) / 0.587;
+      out[i]   = ccRound8(R);
+      out[i+1] = ccRound8(G);
+      out[i+2] = ccRound8(B);
+      out[i+3] = src[i+3];
+    }
+  }
+}
+async function ccdClean(src, w, h, olpf, detail, chroma){
+  const P = ccParams(olpf, detail, chroma);
+  if (!P.active) return null;   // caller falls back to the untouched source
+  const out = new Uint8ClampedArray(w*h*4);
+  const pad = ccPad(P);
+  const buf = ccAlloc(w, Math.min(h, CC_BAND_ROWS + 2*pad));
+  const nBands = Math.ceil(h / CC_BAND_ROWS);
+  let done = 0;
+  for (let y0=0; y0<h; y0+=CC_BAND_ROWS){
+    const y1 = Math.min(h, y0 + CC_BAND_ROWS);
+    ccBand(src, out, w, Math.max(0, y0-pad), Math.min(h, y1+pad), y0, y1, P, buf);
+    done++;
+    if (y1 < h){
+      console.log('Stage D progress: ' + Math.round(done/nBands*100) + '%');
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return out;
 }
 
 /* ---------- Noise Math (identical to prior single-thread version) ---------- */
@@ -619,7 +864,9 @@ let lastRawParams = { w:-1, h:-1, seedId:0 };
 let cachedNoiseFields = null;
 let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
 let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
-let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
+let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
+let cachedCleanSrc = null;   // Stage D output; null means "use srcData untouched"
+let lastCleanState = { key:'', w:-1, h:-1 };
 
 // Forward all console.* calls from inside the worker (where jpegli runs) to
 // the main thread's persistent log, since a worker's own console output is
@@ -658,9 +905,11 @@ self.onmessage = async function(e){
     cachedRawNoise = null;
     cachedNoiseFields = null;
     cachedGrainDelta = null;
+    cachedCleanSrc = null;
+    lastCleanState = { key:'', w:-1, h:-1 };
     lastRawParams = { w:-1, h:-1, seedId:0 };
     lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
-    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0 };
+    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
     self.postMessage({cmd:'inited'});
     const srcCopy = srcData.slice();
     const blurRCopy = blurredSrc.r.slice(), blurGCopy = blurredSrc.g.slice(), blurBCopy = blurredSrc.b.slice();
@@ -677,8 +926,24 @@ self.onmessage = async function(e){
           seedId = msg.seedId, isSplitScreen = msg.isSplitScreen,
           wantGpuData = msg.wantGpuData !== false; // default true for the live-preview path
     const w = W, h = H;
-    const src = srcData;
     const t0 = performance.now();
+
+    // Stage D (CCD Clean): runs first and replaces the source everything else
+    // reads. Cached on its own three params, so dragging a grain slider never
+    // re-runs it. Cheap no-op when all three are 0.
+    const cleanKey = (p.olpf||0) + '|' + (p.detail||0) + '|' + (p.chroma||0);
+    if (lastCleanState.key !== cleanKey || lastCleanState.w !== w || lastCleanState.h !== h){
+      if (cleanKey === '0|0|0') {
+        cachedCleanSrc = null;
+      } else {
+        console.log('render: Stage D cleaning ' + w + 'x' + h + ' (' + cleanKey + ')...');
+        cachedCleanSrc = await ccdClean(srcData, w, h, p.olpf||0, p.detail||0, p.chroma||0);
+        console.log('render: Stage D done');
+      }
+      lastCleanState = { key: cleanKey, w, h };
+    }
+    const src = cachedCleanSrc || srcData;
+    const tD = performance.now();
 
     // Stage A0 (heaviest sub-step): fresh gaussian random fields. Only on
     // reseed/new image/forceHeavy -- NOT on a plain Size drag, since the
@@ -723,7 +988,8 @@ self.onmessage = async function(e){
     // still independent of intensity. Recomputed on bias/chan change (or if A ran).
     const needsCompose = needsBlur ||
       lastComposeParams.bias !== p.bias || lastComposeParams.chan !== p.chan ||
-      lastComposeParams.w !== w || lastComposeParams.h !== h || lastComposeParams.seedId !== seedId;
+      lastComposeParams.w !== w || lastComposeParams.h !== h ||
+      lastComposeParams.seedId !== seedId || lastComposeParams.cleanKey !== cleanKey;
 
     if (needsCompose) {
       console.log('render: Stage B computing weight/mix for ' + w + 'x' + h + '...');
@@ -750,7 +1016,7 @@ self.onmessage = async function(e){
         if (end < n) { console.log('Stage B progress: ' + Math.round(end/n*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
       }
       cachedGrainDelta = { r:gR, g:gG, b:gB };
-      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId };
+      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId, cleanKey };
       console.log('render: Stage B done');
     }
 
@@ -778,7 +1044,10 @@ self.onmessage = async function(e){
         if (col===w) col=0;
         let r0=src[i], g0=src[i+1], b0=src[i+2];
         if (isSplitScreen && col<intHalfW){
-          out[i]=r0; out[i+1]=g0; out[i+2]=b0; out[i+3]=src[i+3];
+          // "Before" side must be the pristine photo, so it has to read srcData
+          // rather than src -- src is the Stage D output once CCD Clean is on,
+          // which would silently make the comparison meaningless.
+          out[i]=srcData[i]; out[i+1]=srcData[i+1]; out[i+2]=srcData[i+2]; out[i+3]=srcData[i+3];
           continue;
         }
         if (blendAmt>0){
@@ -853,7 +1122,8 @@ self.onmessage = async function(e){
     const t3 = performance.now();
     const timing = {
       total: +(t3-t0).toFixed(1),
-      stageA0: +(t1-t0).toFixed(1), stageA0Ran: needsRaw,
+      stageD: +(tD-t0).toFixed(1), stageDRan: lastCleanState.key === cleanKey && cleanKey !== '0|0|0',
+      stageA0: +(t1-tD).toFixed(1), stageA0Ran: needsRaw,
       stageA: +(t2-t1).toFixed(1), stageARan: needsBlur,
       stageBC: +(t3-t2).toFixed(1), stageBRan: needsCompose,
       w, h
@@ -888,12 +1158,17 @@ modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.
 /* ---------- Presets ---------- */
 const presets = {
   custom: null,
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72 }
+  // Every preset lists all keys explicitly, including the CCD Clean trio.
+  // The pre-existing five keep olpf/detail/chroma at 0, so they render exactly
+  // as they did before this feature existed.
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 },
+  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55 },
+  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70 },
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -903,7 +1178,10 @@ const els = {
   clump: document.getElementById("clump"),
   bias: document.getElementById("bias"),
   lift: document.getElementById("lift"),
-  chan: document.getElementById("chan")
+  chan: document.getElementById("chan"),
+  olpf: document.getElementById("olpf"),
+  detail: document.getElementById("detail"),
+  chroma: document.getElementById("chroma")
 };
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
@@ -947,7 +1225,7 @@ renderWorker.onmessage = (e) => {
     const t = msg.timing;
     window.__debugLog && window.__debugLog(
       `render ${t.w}x${t.h}: total ${t.total}ms ` +
-      `[A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
+      `[D:${t.stageD}ms A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
     );
   }
   if (msg.gpuData) {
@@ -1230,6 +1508,9 @@ function readParams(){
     bias: +els.bias.value / 100,     
     lift: +els.lift.value * 0.0024, // slider 0..50 -> black floor 0..0.12 (~31/255)
     chan: +els.chan.value / 100,
+    olpf: +els.olpf.value / 100,
+    detail: +els.detail.value / 100,
+    chroma: +els.chroma.value / 100,
   };
 }
 
@@ -1241,6 +1522,9 @@ function updateReadout(){
   vEls.bias.textContent = p.bias.toFixed(2);
   vEls.lift.textContent = els.lift.value;
   vEls.chan.textContent = Math.round(p.chan*100);
+  vEls.olpf.textContent = els.olpf.value;
+  vEls.detail.textContent = els.detail.value;
+  vEls.chroma.textContent = els.chroma.value;
 }
 
 /* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
@@ -1542,7 +1826,14 @@ for(let key in els){
     updateReadout();
     e.target.parentElement.classList.add("active");
     const isHeavy = (key === 'size' || key === 'clump');
-    if (!isHeavy && hasImage) drawGPUPreview(readParams(), isSplitScreen);
+    // The GPU fast lane composites grain over the ORIGINAL image textures, so
+    // it cannot represent Stage D at all -- showing it while a CCD Clean
+    // slider moves would flash the uncleaned photo back on screen. Those three
+    // go straight to the worker instead. They also must not set forceHeavy:
+    // the gaussian noise fields are unaffected by cleaning, and regenerating
+    // them is the single most expensive step in the pipeline.
+    const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma');
+    if (!isHeavy && !isClean && hasImage) drawGPUPreview(readParams(), isSplitScreen);
     requestRender(isHeavy);
   });
   els[key].addEventListener("change", (e) => { e.target.parentElement.classList.remove("active"); });
@@ -1567,6 +1858,9 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     els.bias.value = p.bias;
     els.lift.value = p.lift || 0;
     els.chan.value = p.chan;
+    els.olpf.value = p.olpf || 0;
+    els.detail.value = p.detail || 0;
+    els.chroma.value = p.chroma || 0;
     updateReadout();
     requestRender(true);
   }
@@ -1576,6 +1870,7 @@ document.getElementById("reseed").addEventListener("click", () => { currentSeedI
 document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
   els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
+  els.olpf.value = 0; els.detail.value = 0; els.chroma.value = 0;
   updateReadout(); requestRender(true);
 });
 
