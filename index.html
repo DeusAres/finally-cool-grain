@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.20</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.21</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -318,6 +318,7 @@
         <option value="heavy">Push Process (Heavy Grain)</option>
         <option value="ccdclean">CCD Clean (Declutter)</option>
         <option value="cybershot">Cybershot (Strong Declutter)</option>
+        <option value="compatta">Compatta Vintage (Clean + Lens)</option>
         <option value="saved1">Saved Custom 1</option>
       </select>
       <div class="tools-row">
@@ -342,6 +343,22 @@
       <div class="row">
         <div class="label"><span>Chroma Clean</span><span class="val" id="v-chroma">0</span></div>
         <input type="range" id="chroma" min="0" max="100" value="0">
+      </div>
+    </div>
+
+    <div class="group">
+      <h3>Lens <span style="color:var(--dim); font-size:9px;">pre-grana</span></h3>
+      <div class="row">
+        <div class="label"><span>Aberrazione Crom.</span><span class="val" id="v-ca">0</span></div>
+        <input type="range" id="ca" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <div class="label"><span>Vignettatura</span><span class="val" id="v-vignette">0</span></div>
+        <input type="range" id="vignette" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <div class="label"><span>Falloff</span><span class="val" id="v-falloff">40</span></div>
+        <input type="range" id="falloff" min="0" max="100" value="40">
       </div>
     </div>
 
@@ -411,6 +428,13 @@
       <li><strong>Declutter:</strong> separa struttura e texture con un guided filter e attenua la texture <em>solo</em> dove la densità di gradiente è alta. Un bordo netto ha gradiente forte su una linea sola; il fogliame ce l'ha ovunque: è questo che li distingue, non il contrasto. Per questo i bordi restano, la confusione no.</li>
       <li><strong>Chroma Clean:</strong> sfoca solo Cb/Cr nelle zone dense, lasciando intatta la luminanza. È dove sta gran parte del "confuso" cromatico del digitale; i CCD ne avevano molto meno.</li>
       <li>Costo: ~0.4s per 2MP. Ha una cache sua, quindi muovere gli slider della grana non lo fa rigirare.</li>
+    </ul>
+    <h2 style="margin-top:22px">Lens</h2>
+    <p>Difetti ottici, applicati <em>dopo</em> CCD Clean e <em>prima</em> della grana: l'ordine e' fisico, l'obiettivo viene prima dell'emulsione. Applicarli dopo sposterebbe e scurirebbe i granuli stessi, cosa che sulla pellicola vera non succede.</p>
+    <ul>
+      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono riscalati radialmente attorno all'asse ottico, G resta fermo come riferimento. Zero al centro, massima agli angoli. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
+      <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
+      <li><strong>Falloff:</strong> forma della curva, non profondita'. A 0 e' la caduta ottica cos&sup4; reale, graduale e che parte subito dal centro. A 100 e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce o un filtro impilato.</li>
     </ul>
   </div>
 </div>
@@ -737,6 +761,161 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
   return out;
 }
 
+/* ============================================================================
+   Stage E -- "Lens": lateral chromatic aberration + analog vignetting.
+   Sits between Stage D and the grain pipeline, because that is the physical
+   order: both happen at the lens, i.e. BEFORE light reaches the emulsion.
+   Running them after the grain would displace and darken the grain itself,
+   which never happens on real film.
+
+   CA is lateral (transverse) only: R and B are radially rescaled about the
+   optical axis, G is the reference wavelength and does not move. Displacement
+   grows with radius, so the centre is clean and the corners fringe. Blue gets
+   ~1.35x the red displacement because short wavelengths disperse more -- which
+   is why the cyan fringe always reads stronger than the red one on real glass.
+   The axis is deliberately off-centre and the displacement is slightly
+   anisotropic: perfectly centred, perfectly circular CA is the single thing
+   that instantly reads as a plugin rather than as glass.
+
+   Vignetting is NOT a gamma-space luminance multiply. That is the Lightroom
+   model and it is exactly why LR vignettes look digital: corners crush toward
+   black and go muddy. On film, less corner light puts those pixels in the TOE
+   of the characteristic curve, where the stock is less contrasty -- so corners
+   go MILKY rather than black, they desaturate, and (because the three emulsion
+   layers have staggered toes, the cyan layer sitting lowest on most C41 stock)
+   they drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog
+   term that lifts the corner blacks, desaturate, shift warm.
+   ========================================================================== */
+const LN_CA_MAX     = 0.0022; // max corner displacement as a fraction of radius
+const LN_CA_BLUE_K  = 1.35;   // blue disperses more than red
+const LN_CA_CX      = 0.018;  // optical axis offset, fraction of min(w,h)
+const LN_CA_CY      = -0.012;
+const LN_CA_ANISO_Y = 1.06;   // real elements are never perfectly symmetric
+const LN_VIG_MAX    = 0.72;   // corner loses up to 72% of linear light (~1.8 stops)
+const LN_VIG_T      = 0.90;   // field-width term in the cos^4 falloff
+const LN_VIG_KNEE   = 0.55;   // where mechanical cutoff starts, fraction of radius
+const LN_VIG_FOG    = 0.006;  // linear-light fog at full falloff -- the toe lift.
+// Calibrated so a pure-black corner lands near sRGB 14 at max vignette: milky,
+// which is the point, but not a grey haze. At 0.030 the lift cancelled most of
+// the darkening on corners that were already dark to begin with.
+const LN_VIG_DESAT  = 0.45;   // chroma pulled toward luma at full falloff
+const LN_VIG_WARM_R = 0.10;   // linear-light gain on R at full falloff
+const LN_VIG_WARM_B = 0.06;   // linear-light cut on B at full falloff
+const LN_VIG_DECENT = 0.5;    // vignette shares the axis, at half the offset
+const LN_ROWS_CHUNK = 256;
+
+const LN_S2L = new Float32Array(256);
+for (let i=0;i<256;i++){ const c=i/255;
+  LN_S2L[i] = c <= 0.04045 ? c/12.92 : Math.pow((c+0.055)/1.055, 2.4); }
+const LN_ENC_N = 4096;
+const LN_L2S = new Float32Array(LN_ENC_N+1);
+for (let i=0;i<=LN_ENC_N;i++){ const c=i/LN_ENC_N;
+  LN_L2S[i] = (c <= 0.0031308 ? c*12.92 : 1.055*Math.pow(c, 1/2.4) - 0.055) * 255; }
+function lnEncode(v){
+  if (v <= 0) return 0;
+  if (v >= 1) return 255;
+  const f = v*LN_ENC_N, i = f|0;
+  return LN_L2S[i] + (LN_L2S[i+1]-LN_L2S[i])*(f-i);
+}
+function lnRound8(v){ return v <= 0 ? 0 : (v >= 255 ? 255 : (v+0.5)|0); }
+
+/* 0 at the axis, 1 at the farthest corner.
+   f=0 -> true cos^4 optical falloff: starts dropping immediately, gradual.
+   f=1 -> mechanical cutoff: flat across the centre, fast roll at the edge.
+   NB this is deliberately NOT "raise the cos^4 exponent": once the curve is
+   renormalised to reach 1 at the corner, a steeper exponent darkens the MID
+   field harder, which is the opposite of the mechanical look. */
+function lnFalloffLUT(f, steps){
+  const lut = new Float32Array(steps+1);
+  const raw = (u) => Math.pow(1 + (u*LN_VIG_T)*(u*LN_VIG_T), -2);
+  const r1 = raw(1), denom = (1-r1) || 1;
+  for (let i=0;i<=steps;i++){
+    const u = i/steps;
+    const soft = (1-raw(u))/denom;
+    let t = (u-LN_VIG_KNEE)/(1-LN_VIG_KNEE);
+    t = t<=0 ? 0 : (t>=1 ? 1 : t);
+    lut[i] = soft + (t*t*(3-2*t) - soft)*f;
+  }
+  return lut;
+}
+
+async function lensStage(src, w, h, ca, vig, falloff){
+  if (!(ca > 0 || vig > 0)) return null;   // caller keeps the input untouched
+  const out = new Uint8ClampedArray(w*h*4);
+  const minWH = Math.min(w,h);
+  const cx = w/2 + LN_CA_CX*minWH, cy = h/2 + LN_CA_CY*minWH;
+  const caR = ca*LN_CA_MAX, caB = -ca*LN_CA_MAX*LN_CA_BLUE_K; // blue image is smaller
+  const vx = w/2 + LN_CA_CX*minWH*LN_VIG_DECENT;
+  const vy = h/2 + LN_CA_CY*minWH*LN_VIG_DECENT;
+  let rMax = 0;
+  for (const p of [[0,0],[w,0],[0,h],[w,h]]){
+    const d = Math.hypot(p[0]-vx, p[1]-vy); if (d > rMax) rMax = d;
+  }
+  const LUT_N = 2048;
+  const fall = vig > 0 ? lnFalloffLUT(falloff, LUT_N) : null;
+  const depth = vig*LN_VIG_MAX;
+  const wm1 = w-1, hm1 = h-1;
+
+  function samp(off, x, y){
+    if (x < 0) x = 0; else if (x > wm1) x = wm1;
+    if (y < 0) y = 0; else if (y > hm1) y = hm1;
+    const x0 = x|0, y0 = y|0;
+    const x1 = x0 < wm1 ? x0+1 : wm1, y1 = y0 < hm1 ? y0+1 : hm1;
+    const fx = x-x0, fy = y-y0;
+    const a = src[(y0*w+x0)*4+off], b = src[(y0*w+x1)*4+off];
+    const c = src[(y1*w+x0)*4+off], d = src[(y1*w+x1)*4+off];
+    const t = a + (b-a)*fx;
+    return t + ((c + (d-c)*fx) - t)*fy;
+  }
+  function lin(v){ const i = v|0; return LN_S2L[i] + (LN_S2L[i<255?i+1:255]-LN_S2L[i])*(v-i); }
+
+  for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
+    const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
+    for (let y=yStart; y<yEnd; y++){
+      const dy = y-cy, vdy = y-vy;
+      for (let x=0; x<w; x++){
+        const i = (y*w+x)*4;
+        let R,G,B;
+        if (caR !== 0){
+          const dx = x-cx;
+          // Displacement is proportional to radius, so this is just a scale
+          // about the axis -- no sqrt needed per pixel.
+          R = samp(0, cx+dx*(1+caR), cy+dy*(1+caR*LN_CA_ANISO_Y));
+          G = src[i+1];
+          B = samp(2, cx+dx*(1+caB), cy+dy*(1+caB*LN_CA_ANISO_Y));
+        } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
+
+        if (depth > 0){
+          const dxv = x-vx;
+          const u = Math.sqrt(dxv*dxv + vdy*vdy)/rMax;
+          const fi = u*LUT_N, fi0 = fi|0;
+          const g = fi0 >= LUT_N ? fall[LUT_N] : fall[fi0] + (fall[fi0+1]-fall[fi0])*(fi-fi0);
+          const t = depth*g, v = 1-t;
+          let lr = lin(R)*v, lg = lin(G)*v, lb = lin(B)*v;
+          const fog = LN_VIG_FOG*t;                    // toe lift: milky, not crushed
+          lr += fog; lg += fog; lb += fog;
+          const luma = 0.2126*lr + 0.7152*lg + 0.0722*lb;
+          const ds = LN_VIG_DESAT*t;                   // toe desaturation
+          lr += (luma-lr)*ds; lg += (luma-lg)*ds; lb += (luma-lb)*ds;
+          lr *= 1 + LN_VIG_WARM_R*t;                   // staggered layer toes
+          lb *= 1 - LN_VIG_WARM_B*t;
+          out[i]   = lnRound8(lnEncode(lr));
+          out[i+1] = lnRound8(lnEncode(lg));
+          out[i+2] = lnRound8(lnEncode(lb));
+        } else {
+          out[i] = lnRound8(R); out[i+1] = lnRound8(G); out[i+2] = lnRound8(B);
+        }
+        out[i+3] = src[i+3];
+      }
+    }
+    if (yEnd < h){
+      console.log('Stage E progress: ' + Math.round(yEnd/h*100) + '%');
+      await new Promise(r => setTimeout(r, 0));
+    }
+  }
+  return out;
+}
+
 /* ---------- Noise Math (identical to prior single-thread version) ---------- */
 let bmCache = null;
 function gaussian(){
@@ -867,6 +1046,8 @@ let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of 
 let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
 let cachedCleanSrc = null;   // Stage D output; null means "use srcData untouched"
 let lastCleanState = { key:'', w:-1, h:-1 };
+let cachedLensSrc = null;    // Stage E output; null means "use the Stage D result as-is"
+let lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
 
 // Forward all console.* calls from inside the worker (where jpegli runs) to
 // the main thread's persistent log, since a worker's own console output is
@@ -907,6 +1088,8 @@ self.onmessage = async function(e){
     cachedGrainDelta = null;
     cachedCleanSrc = null;
     lastCleanState = { key:'', w:-1, h:-1 };
+    cachedLensSrc = null;
+    lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
     lastRawParams = { w:-1, h:-1, seedId:0 };
     lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
     lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
@@ -942,8 +1125,26 @@ self.onmessage = async function(e){
       }
       lastCleanState = { key: cleanKey, w, h };
     }
-    const src = cachedCleanSrc || srcData;
+    const cleanedSrc = cachedCleanSrc || srcData;
     const tD = performance.now();
+
+    // Stage E (Lens): CA + vignette, on top of the Stage D result. Chained
+    // cache -- it re-runs when its own params change OR when the thing beneath
+    // it changed, so lastLensState tracks the Stage D key as well.
+    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0);
+    if (lastLensState.key !== lensKey || lastLensState.srcKey !== cleanKey ||
+        lastLensState.w !== w || lastLensState.h !== h){
+      if (lensKey.indexOf('0|0|') === 0 || ((p.ca||0) === 0 && (p.vignette||0) === 0)) {
+        cachedLensSrc = null;
+      } else {
+        console.log('render: Stage E lens ' + w + 'x' + h + ' (' + lensKey + ')...');
+        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0);
+        console.log('render: Stage E done');
+      }
+      lastLensState = { key: lensKey, srcKey: cleanKey, w, h };
+    }
+    const src = cachedLensSrc || cleanedSrc;
+    const tE = performance.now();
 
     // Stage A0 (heaviest sub-step): fresh gaussian random fields. Only on
     // reseed/new image/forceHeavy -- NOT on a plain Size drag, since the
@@ -989,7 +1190,8 @@ self.onmessage = async function(e){
     const needsCompose = needsBlur ||
       lastComposeParams.bias !== p.bias || lastComposeParams.chan !== p.chan ||
       lastComposeParams.w !== w || lastComposeParams.h !== h ||
-      lastComposeParams.seedId !== seedId || lastComposeParams.cleanKey !== cleanKey;
+      lastComposeParams.seedId !== seedId ||
+      lastComposeParams.cleanKey !== (cleanKey + '||' + lensKey);
 
     if (needsCompose) {
       console.log('render: Stage B computing weight/mix for ' + w + 'x' + h + '...');
@@ -1016,7 +1218,7 @@ self.onmessage = async function(e){
         if (end < n) { console.log('Stage B progress: ' + Math.round(end/n*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
       }
       cachedGrainDelta = { r:gR, g:gG, b:gB };
-      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId, cleanKey };
+      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId, cleanKey: cleanKey + '||' + lensKey };
       console.log('render: Stage B done');
     }
 
@@ -1122,8 +1324,8 @@ self.onmessage = async function(e){
     const t3 = performance.now();
     const timing = {
       total: +(t3-t0).toFixed(1),
-      stageD: +(tD-t0).toFixed(1), stageDRan: lastCleanState.key === cleanKey && cleanKey !== '0|0|0',
-      stageA0: +(t1-tD).toFixed(1), stageA0Ran: needsRaw,
+      stageD: +(tD-t0).toFixed(1), stageE: +(tE-tD).toFixed(1),
+      stageA0: +(t1-tE).toFixed(1), stageA0Ran: needsRaw,
       stageA: +(t2-t1).toFixed(1), stageARan: needsBlur,
       stageBC: +(t3-t2).toFixed(1), stageBRan: needsCompose,
       w, h
@@ -1161,14 +1363,15 @@ const presets = {
   // Every preset lists all keys explicitly, including the CCD Clean trio.
   // The pre-existing five keep olpf/detail/chroma at 0, so they render exactly
   // as they did before this feature existed.
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 },
-  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55 },
-  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 }
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
+  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
+  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -1181,7 +1384,10 @@ const els = {
   chan: document.getElementById("chan"),
   olpf: document.getElementById("olpf"),
   detail: document.getElementById("detail"),
-  chroma: document.getElementById("chroma")
+  chroma: document.getElementById("chroma"),
+  ca: document.getElementById("ca"),
+  vignette: document.getElementById("vignette"),
+  falloff: document.getElementById("falloff")
 };
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
@@ -1225,7 +1431,7 @@ renderWorker.onmessage = (e) => {
     const t = msg.timing;
     window.__debugLog && window.__debugLog(
       `render ${t.w}x${t.h}: total ${t.total}ms ` +
-      `[D:${t.stageD}ms A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
+      `[D:${t.stageD}ms E:${t.stageE}ms A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
     );
   }
   if (msg.gpuData) {
@@ -1511,6 +1717,9 @@ function readParams(){
     olpf: +els.olpf.value / 100,
     detail: +els.detail.value / 100,
     chroma: +els.chroma.value / 100,
+    ca: +els.ca.value / 100,
+    vignette: +els.vignette.value / 100,
+    falloff: +els.falloff.value / 100,
   };
 }
 
@@ -1525,6 +1734,9 @@ function updateReadout(){
   vEls.olpf.textContent = els.olpf.value;
   vEls.detail.textContent = els.detail.value;
   vEls.chroma.textContent = els.chroma.value;
+  vEls.ca.textContent = els.ca.value;
+  vEls.vignette.textContent = els.vignette.value;
+  vEls.falloff.textContent = els.falloff.value;
 }
 
 /* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
@@ -1832,7 +2044,8 @@ for(let key in els){
     // go straight to the worker instead. They also must not set forceHeavy:
     // the gaussian noise fields are unaffected by cleaning, and regenerating
     // them is the single most expensive step in the pipeline.
-    const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma');
+    const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma' ||
+                     key === 'ca' || key === 'vignette' || key === 'falloff');
     if (!isHeavy && !isClean && hasImage) drawGPUPreview(readParams(), isSplitScreen);
     requestRender(isHeavy);
   });
@@ -1861,6 +2074,9 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     els.olpf.value = p.olpf || 0;
     els.detail.value = p.detail || 0;
     els.chroma.value = p.chroma || 0;
+    els.ca.value = p.ca || 0;
+    els.vignette.value = p.vignette || 0;
+    els.falloff.value = (p.falloff === undefined ? 40 : p.falloff);
     updateReadout();
     requestRender(true);
   }
@@ -1871,6 +2087,7 @@ document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
   els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
   els.olpf.value = 0; els.detail.value = 0; els.chroma.value = 0;
+  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40;
   updateReadout(); requestRender(true);
 });
 
