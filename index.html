@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.21</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.22</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -432,7 +432,7 @@
     <h2 style="margin-top:22px">Lens</h2>
     <p>Difetti ottici, applicati <em>dopo</em> CCD Clean e <em>prima</em> della grana: l'ordine e' fisico, l'obiettivo viene prima dell'emulsione. Applicarli dopo sposterebbe e scurirebbe i granuli stessi, cosa che sulla pellicola vera non succede.</p>
     <ul>
-      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono riscalati radialmente attorno all'asse ottico, G resta fermo come riferimento. Zero al centro, massima agli angoli. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
+      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La caduta e' <em>esponenziale</em> nel raggio, non lineare: una rampa lineare frangia gia' a meta' campo e legge come poltiglia cromatica diffusa invece che come vetro. L'esponenziale tiene il centro davvero pulito e scarica tutto sul campo esterno &mdash; a meta' raggio il lineare da' il 50% dello spostamento massimo, questo il 15%. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
       <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
       <li><strong>Falloff:</strong> forma della curva, non profondita'. A 0 e' la caduta ottica cos&sup4; reale, graduale e che parte subito dal centro. A 100 e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce o un filtro impilato.</li>
     </ul>
@@ -768,9 +768,14 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    Running them after the grain would displace and darken the grain itself,
    which never happens on real film.
 
-   CA is lateral (transverse) only: R and B are radially rescaled about the
+   CA is lateral (transverse) only: R and B are radially displaced about the
    optical axis, G is the reference wavelength and does not move. Displacement
-   grows with radius, so the centre is clean and the corners fringe. Blue gets
+   follows an EXPONENTIAL falloff in radius, not a linear one: a linear ramp is
+   already fringing at half-field, which reads as overall colour mush rather
+   than as glass. Exponential keeps the centre genuinely clean and puts the
+   whole budget in the outer field -- which is what real glass does, and which
+   also means the ceiling can be raised without muddying the middle. At half
+   radius a linear ramp gives 50% of max displacement; this gives 15%. Blue gets
    ~1.35x the red displacement because short wavelengths disperse more -- which
    is why the cyan fringe always reads stronger than the red one on real glass.
    The axis is deliberately off-centre and the displacement is slightly
@@ -786,7 +791,8 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    they drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog
    term that lifts the corner blacks, desaturate, shift warm.
    ========================================================================== */
-const LN_CA_MAX     = 0.0022; // max corner displacement as a fraction of radius
+const LN_CA_MAX     = 0.0040; // max CORNER displacement as a fraction of corner radius
+const LN_CA_EXP     = 3.5;    // exponential falloff steepness (see lnCaLUT)
 const LN_CA_BLUE_K  = 1.35;   // blue disperses more than red
 const LN_CA_CX      = 0.018;  // optical axis offset, fraction of min(w,h)
 const LN_CA_CY      = -0.012;
@@ -825,6 +831,15 @@ function lnRound8(v){ return v <= 0 ? 0 : (v >= 255 ? 255 : (v+0.5)|0); }
    NB this is deliberately NOT "raise the cos^4 exponent": once the curve is
    renormalised to reach 1 at the corner, a steeper exponent darkens the MID
    field harder, which is the opposite of the mechanical look. */
+/* CA displacement falloff: 0 at the axis, 1 at the farthest corner, rising
+   exponentially rather than linearly. */
+function lnCaLUT(steps){
+  const lut = new Float32Array(steps+1);
+  const den = Math.exp(LN_CA_EXP) - 1;
+  for (let i=0;i<=steps;i++) lut[i] = (Math.exp(LN_CA_EXP*(i/steps)) - 1)/den;
+  return lut;
+}
+
 function lnFalloffLUT(f, steps){
   const lut = new Float32Array(steps+1);
   const raw = (u) => Math.pow(1 + (u*LN_VIG_T)*(u*LN_VIG_T), -2);
@@ -844,7 +859,14 @@ async function lensStage(src, w, h, ca, vig, falloff){
   const out = new Uint8ClampedArray(w*h*4);
   const minWH = Math.min(w,h);
   const cx = w/2 + LN_CA_CX*minWH, cy = h/2 + LN_CA_CY*minWH;
-  const caR = ca*LN_CA_MAX, caB = -ca*LN_CA_MAX*LN_CA_BLUE_K; // blue image is smaller
+  let caRMax = 0;
+  for (const p of [[0,0],[w,0],[0,h],[w,h]]){
+    const d = Math.hypot(p[0]-cx, p[1]-cy); if (d > caRMax) caRMax = d;
+  }
+  const CA_LUT_N = 2048;
+  const caLut = ca > 0 ? lnCaLUT(CA_LUT_N) : null;
+  const dMaxR = ca*LN_CA_MAX*caRMax;            // px of displacement at the corner
+  const dMaxB = -dMaxR*LN_CA_BLUE_K;            // blue image is the smaller one
   const vx = w/2 + LN_CA_CX*minWH*LN_VIG_DECENT;
   const vy = h/2 + LN_CA_CY*minWH*LN_VIG_DECENT;
   let rMax = 0;
@@ -876,13 +898,19 @@ async function lensStage(src, w, h, ca, vig, falloff){
       for (let x=0; x<w; x++){
         const i = (y*w+x)*4;
         let R,G,B;
-        if (caR !== 0){
+        if (dMaxR !== 0){
           const dx = x-cx;
-          // Displacement is proportional to radius, so this is just a scale
-          // about the axis -- no sqrt needed per pixel.
-          R = samp(0, cx+dx*(1+caR), cy+dy*(1+caR*LN_CA_ANISO_Y));
-          G = src[i+1];
-          B = samp(2, cx+dx*(1+caB), cy+dy*(1+caB*LN_CA_ANISO_Y));
+          const r = Math.sqrt(dx*dx + dy*dy);
+          if (r > 0.5){
+            const fi = (r/caRMax)*CA_LUT_N, fi0 = fi|0;
+            const g = fi0 >= CA_LUT_N ? caLut[CA_LUT_N]
+                    : caLut[fi0] + (caLut[fi0+1]-caLut[fi0])*(fi-fi0);
+            // radial displacement in px -> scale about the axis
+            const sR = dMaxR*g/r, sB = dMaxB*g/r;
+            R = samp(0, cx+dx*(1+sR), cy+dy*(1+sR*LN_CA_ANISO_Y));
+            G = src[i+1];
+            B = samp(2, cx+dx*(1+sB), cy+dy*(1+sB*LN_CA_ANISO_Y));
+          } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
         } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
 
         if (depth > 0){
