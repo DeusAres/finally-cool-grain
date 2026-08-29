@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.23</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.24</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -351,6 +351,10 @@
       <div class="row">
         <div class="label"><span>Aberrazione Crom.</span><span class="val" id="v-ca">0</span></div>
         <input type="range" id="ca" min="0" max="100" value="0">
+      </div>
+      <div class="row">
+        <div class="label"><span>Diffusione CA</span><span class="val" id="v-spread">0</span></div>
+        <input type="range" id="spread" min="0" max="100" value="0">
       </div>
       <div class="row">
         <div class="label"><span>Vignettatura</span><span class="val" id="v-vignette">0</span></div>
@@ -438,6 +442,7 @@
     <ul>
       <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La caduta e' <em>esponenziale</em> nel raggio, non lineare: una rampa lineare frangia gia' a meta' campo e legge come poltiglia cromatica diffusa invece che come vetro. L'esponenziale tiene il centro davvero pulito e scarica tutto sul campo esterno &mdash; a meta' raggio il lineare da' il 50% dello spostamento massimo, questo il 15%. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
       <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
+      <li><strong>Diffusione CA:</strong> come viene distribuito lo spostamento. A <strong>0</strong> e' una traslazione uniforme di R e B su tutto il fotogramma: i colori si separano ovunque, soggetti centrali compresi &mdash; e' il comportamento "Linear Aberration", ed e' quello che si vede davvero su una foto normale. A <strong>100</strong> e' la caduta esponenziale radiale: centro pulito, tutto scaricato sugli angoli. Fisicamente e' quello che fa un obiettivo, ma su una foto con soggetto centrale e angoli lisci non c'e' niente da frangiare e l'effetto e' invisibile per quanto si alzi l'ampiezza. Valori intermedi mescolano i due.</li>
       <li><strong>Frangia Viola:</strong> aberrazione <em>assiale</em>, l'altra meta' del fenomeno. Quella laterale e' radiale e si vede solo su bordi netti nel campo esterno: su un soggetto centrale o una scena a basso contrasto e' invisibile per costruzione, per quanto si alzi lo slider. Questa invece dipende dalla <em>vicinanza alle alte luci</em>, non dal raggio, quindi lavora sui controluce, sulle finestre bruciate e sui riflessi speculari ovunque siano nel fotogramma. Fisicamente e' il piano di fuoco che si sparpaglia tra le lunghezze d'onda piu' il crosstalk delle microlenti; visivamente e' l'alone magenta appena <em>fuori</em> dalla zona bruciata &mdash; ed e' quello che la maggior parte delle persone riconosce come "aberrazione cromatica" guardando una foto.</li>
       <li><strong>Falloff:</strong> forma della curva della vignettatura, non profondita'. A 0 e' la caduta ottica cos&sup4; reale, graduale e che parte subito dal centro. A 100 e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce o un filtro impilato.</li>
     </ul>
@@ -798,6 +803,17 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    ========================================================================== */
 const LN_CA_MAX     = 0.0040; // max CORNER displacement as a fraction of corner radius
 const LN_CA_EXP     = 3.5;    // exponential falloff steepness (see lnCaLUT)
+/* Spread mixes two ways of distributing the same displacement budget:
+   uniform (0) -- a flat translation of R and B, identical everywhere in the
+     frame, so colours separate on a centred subject too. This is the "Linear
+     Aberration" behaviour, and it is the one that actually reads as "the
+     colours are coming apart" on an ordinary photograph.
+   radial  (1) -- the exponential-falloff radial scale: clean centre, the whole
+     budget in the corners. Physically what a lens does, but on a real photo
+     with a centred subject and smooth corners there is nothing there to fringe
+     and the effect is invisible no matter how far the amount slider goes. */
+const LN_CA_DIR_X   = 0.94;   // direction of the uniform translation (unit vector)
+const LN_CA_DIR_Y   = 0.34;
 const LN_CA_BLUE_K  = 1.35;   // blue disperses more than red
 const LN_CA_CX      = 0.018;  // optical axis offset, fraction of min(w,h)
 const LN_CA_CY      = -0.012;
@@ -912,22 +928,29 @@ function lnFalloffLUT(f, steps){
    function containing awaits, and inline these ran ~6x slower for identical
    arithmetic. Stage D already uses this shape (ccBand); same reason. */
 function lnCaChunk(src, out, w, yStart, yEnd, cx, cy, caRMax, caLut, lutN,
-                   dMaxR, dMaxB, wm1, hm1){
+                   dMaxR, dMaxB, wm1, hm1, sp){
+  const uniR = (1-sp)*dMaxR, uniB = (1-sp)*dMaxB;
   for (let y=yStart; y<yEnd; y++){
     const dy = y-cy;
     for (let x=0; x<w; x++){
       const i = (y*w+x)*4;
       const dx = x-cx;
       const r = Math.sqrt(dx*dx + dy*dy);
-      if (r > 0.5){
+      // Total offset in px = uniform translation + radial term. The uniform
+      // part has no 1/r, so there is no singularity on the axis and the effect
+      // survives on a centred subject -- which is the entire point of it.
+      let oxR = uniR*LN_CA_DIR_X, oyR = uniR*LN_CA_DIR_Y;
+      let oxB = uniB*LN_CA_DIR_X, oyB = uniB*LN_CA_DIR_Y;
+      if (sp > 0 && r > 0.5){
         const fi = (r/caRMax)*lutN, fi0 = fi|0;
         const g = fi0 >= lutN ? caLut[lutN] : caLut[fi0] + (caLut[fi0+1]-caLut[fi0])*(fi-fi0);
-        // radial displacement in px -> scale about the axis
-        const sR = dMaxR*g/r, sB = dMaxB*g/r;
-        out[i]   = lnRound8(lnSamp(src, w, wm1, hm1, 0, cx+dx*(1+sR), cy+dy*(1+sR*LN_CA_ANISO_Y)));
-        out[i+1] = src[i+1];
-        out[i+2] = lnRound8(lnSamp(src, w, wm1, hm1, 2, cx+dx*(1+sB), cy+dy*(1+sB*LN_CA_ANISO_Y)));
-      } else { out[i]=src[i]; out[i+1]=src[i+1]; out[i+2]=src[i+2]; }
+        const kR = sp*dMaxR*g/r, kB = sp*dMaxB*g/r;
+        oxR += dx*kR; oyR += dy*kR*LN_CA_ANISO_Y;
+        oxB += dx*kB; oyB += dy*kB*LN_CA_ANISO_Y;
+      }
+      out[i]   = lnRound8(lnSamp(src, w, wm1, hm1, 0, x+oxR, y+oyR));
+      out[i+1] = src[i+1];
+      out[i+2] = lnRound8(lnSamp(src, w, wm1, hm1, 2, x+oxB, y+oyB));
       out[i+3] = src[i+3];
     }
   }
@@ -990,8 +1013,9 @@ function lnComposeChunk(out, halo, w, yStart, yEnd, cx, cy, vx, vy, caRMax, rMax
   }
 }
 
-async function lensStage(src, w, h, ca, vig, falloff, fringe){
+async function lensStage(src, w, h, ca, vig, falloff, fringe, spread){
   fringe = fringe || 0;
+  spread = spread === undefined ? 1 : spread;
   if (!(ca > 0 || vig > 0 || fringe > 0)) return null; // caller keeps input as-is
   const out = new Uint8ClampedArray(w*h*4);
   const minWH = Math.min(w,h);
@@ -1021,7 +1045,7 @@ async function lensStage(src, w, h, ca, vig, falloff, fringe){
     for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
       const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
       lnCaChunk(src, out, w, yStart, yEnd, cx, cy, caRMax, caLut, CA_LUT_N,
-                dMaxR, dMaxB, w-1, h-1);
+                dMaxR, dMaxB, w-1, h-1, spread);
       if (yEnd < h){ console.log('Stage E CA: ' + Math.round(yEnd/h*100) + '%');
                      await new Promise(r => setTimeout(r, 0)); }
     }
@@ -1279,14 +1303,15 @@ self.onmessage = async function(e){
     // Stage E (Lens): CA + vignette, on top of the Stage D result. Chained
     // cache -- it re-runs when its own params change OR when the thing beneath
     // it changed, so lastLensState tracks the Stage D key as well.
-    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0) + '|' + (p.fringe||0);
+    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0) + '|' +
+                    (p.fringe||0) + '|' + (p.spread === undefined ? 1 : p.spread);
     if (lastLensState.key !== lensKey || lastLensState.srcKey !== cleanKey ||
         lastLensState.w !== w || lastLensState.h !== h){
       if ((p.ca||0) === 0 && (p.vignette||0) === 0 && (p.fringe||0) === 0) {
         cachedLensSrc = null;
       } else {
         console.log('render: Stage E lens ' + w + 'x' + h + ' (' + lensKey + ')...');
-        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0, p.fringe||0);
+        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0, p.fringe||0, p.spread === undefined ? 1 : p.spread);
         console.log('render: Stage E done');
       }
       lastLensState = { key: lensKey, srcKey: cleanKey, w, h };
@@ -1511,15 +1536,15 @@ const presets = {
   // Every preset lists all keys explicitly, including the CCD Clean trio.
   // The pre-existing five keep olpf/detail/chroma at 0, so they render exactly
   // as they did before this feature existed.
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40, fringe: 0 },
-  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30, fringe: 35 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0 }
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
+  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30, fringe: 35, spread: 0 },
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -1536,7 +1561,8 @@ const els = {
   ca: document.getElementById("ca"),
   vignette: document.getElementById("vignette"),
   falloff: document.getElementById("falloff"),
-  fringe: document.getElementById("fringe")
+  fringe: document.getElementById("fringe"),
+  spread: document.getElementById("spread")
 };
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
@@ -1870,6 +1896,7 @@ function readParams(){
     vignette: +els.vignette.value / 100,
     falloff: +els.falloff.value / 100,
     fringe: +els.fringe.value / 100,
+    spread: +els.spread.value / 100,
   };
 }
 
@@ -1888,6 +1915,7 @@ function updateReadout(){
   vEls.vignette.textContent = els.vignette.value;
   vEls.falloff.textContent = els.falloff.value;
   vEls.fringe.textContent = els.fringe.value;
+  vEls.spread.textContent = els.spread.value;
 }
 
 /* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
@@ -2197,7 +2225,7 @@ for(let key in els){
     // them is the single most expensive step in the pipeline.
     const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma' ||
                      key === 'ca' || key === 'vignette' || key === 'falloff' ||
-                     key === 'fringe');
+                     key === 'fringe' || key === 'spread');
     if (!isHeavy && !isClean && hasImage) drawGPUPreview(readParams(), isSplitScreen);
     requestRender(isHeavy);
   });
@@ -2230,6 +2258,7 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     els.vignette.value = p.vignette || 0;
     els.falloff.value = (p.falloff === undefined ? 40 : p.falloff);
     els.fringe.value = p.fringe || 0;
+    els.spread.value = p.spread === undefined ? 0 : p.spread;
     updateReadout();
     requestRender(true);
   }
@@ -2240,7 +2269,7 @@ document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
   els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
   els.olpf.value = 0; els.detail.value = 0; els.chroma.value = 0;
-  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40; els.fringe.value = 0;
+  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40; els.fringe.value = 0; els.spread.value = 0;
   updateReadout(); requestRender(true);
 });
 
