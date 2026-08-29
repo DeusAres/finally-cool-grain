@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.24</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.25</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -353,20 +353,12 @@
         <input type="range" id="ca" min="0" max="100" value="0">
       </div>
       <div class="row">
-        <div class="label"><span>Diffusione CA</span><span class="val" id="v-spread">0</span></div>
-        <input type="range" id="spread" min="0" max="100" value="0">
-      </div>
-      <div class="row">
         <div class="label"><span>Vignettatura</span><span class="val" id="v-vignette">0</span></div>
         <input type="range" id="vignette" min="0" max="100" value="0">
       </div>
       <div class="row">
         <div class="label"><span>Falloff</span><span class="val" id="v-falloff">40</span></div>
         <input type="range" id="falloff" min="0" max="100" value="40">
-      </div>
-      <div class="row">
-        <div class="label"><span>Frangia Viola</span><span class="val" id="v-fringe">0</span></div>
-        <input type="range" id="fringe" min="0" max="100" value="0">
       </div>
     </div>
 
@@ -440,11 +432,9 @@
     <h2 style="margin-top:22px">Lens</h2>
     <p>Difetti ottici, applicati <em>dopo</em> CCD Clean e <em>prima</em> della grana: l'ordine e' fisico, l'obiettivo viene prima dell'emulsione. Applicarli dopo sposterebbe e scurirebbe i granuli stessi, cosa che sulla pellicola vera non succede.</p>
     <ul>
-      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La caduta e' <em>esponenziale</em> nel raggio, non lineare: una rampa lineare frangia gia' a meta' campo e legge come poltiglia cromatica diffusa invece che come vetro. L'esponenziale tiene il centro davvero pulito e scarica tutto sul campo esterno &mdash; a meta' raggio il lineare da' il 50% dello spostamento massimo, questo il 15%. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
+      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La distribuzione segue la <em>stessa curva di copertura della vignettatura</em>, governata dallo slider Falloff: i due effetti sono sempre d'accordo su dove sia il "bordo" del fotogramma. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
       <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
-      <li><strong>Diffusione CA:</strong> come viene distribuito lo spostamento. A <strong>0</strong> e' una traslazione uniforme di R e B su tutto il fotogramma: i colori si separano ovunque, soggetti centrali compresi &mdash; e' il comportamento "Linear Aberration", ed e' quello che si vede davvero su una foto normale. A <strong>100</strong> e' la caduta esponenziale radiale: centro pulito, tutto scaricato sugli angoli. Fisicamente e' quello che fa un obiettivo, ma su una foto con soggetto centrale e angoli lisci non c'e' niente da frangiare e l'effetto e' invisibile per quanto si alzi l'ampiezza. Valori intermedi mescolano i due.</li>
-      <li><strong>Frangia Viola:</strong> aberrazione <em>assiale</em>, l'altra meta' del fenomeno. Quella laterale e' radiale e si vede solo su bordi netti nel campo esterno: su un soggetto centrale o una scena a basso contrasto e' invisibile per costruzione, per quanto si alzi lo slider. Questa invece dipende dalla <em>vicinanza alle alte luci</em>, non dal raggio, quindi lavora sui controluce, sulle finestre bruciate e sui riflessi speculari ovunque siano nel fotogramma. Fisicamente e' il piano di fuoco che si sparpaglia tra le lunghezze d'onda piu' il crosstalk delle microlenti; visivamente e' l'alone magenta appena <em>fuori</em> dalla zona bruciata &mdash; ed e' quello che la maggior parte delle persone riconosce come "aberrazione cromatica" guardando una foto.</li>
-      <li><strong>Falloff:</strong> forma della curva della vignettatura, non profondita'. A 0 e' la caduta ottica cos&sup4; reale, graduale e che parte subito dal centro. A 100 e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce o un filtro impilato.</li>
+      <li><strong>Falloff:</strong> la curva di copertura condivisa da aberrazione e vignettatura &mdash; decide <em>quanta parte</em> del fotogramma toccano, non quanto sono forti. A <strong>0</strong> e' la caduta ottica cos&sup4; reale: parte subito dal centro e arriva ben dentro l'immagine, quindi l'aberrazione si vede anche sul soggetto centrale. A <strong>100</strong> e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce. Con soggetti centrali tienilo basso, altrimenti l'aberrazione non ha niente da toccare.</li>
     </ul>
   </div>
 </div>
@@ -773,47 +763,41 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
 
 /* ============================================================================
    Stage E -- "Lens": lateral chromatic aberration + analog vignetting.
+
    Sits between Stage D and the grain pipeline, because that is the physical
    order: both happen at the lens, i.e. BEFORE light reaches the emulsion.
    Running them after the grain would displace and darken the grain itself,
    which never happens on real film.
 
+   THREE controls, one shared geometry:
+     amount  -- how far apart R and B are pushed
+     vig     -- how much light the falloff removes
+     falloff -- the coverage curve, shared by BOTH of the above
+
+   Everything is measured from a single deliberately off-centre optical axis
+   and distributed by a single normalised-radius curve, so the aberration and
+   the vignette always agree about where the frame's "edge" is: open the
+   coverage and both reach well into the middle of the picture, close it and
+   both stay out at the rim. That is also why the aberration ceiling can be set
+   high -- the curve, not the amount, decides how much of the frame it touches.
+
    CA is lateral (transverse) only: R and B are radially displaced about the
-   optical axis, G is the reference wavelength and does not move. Displacement
-   follows an EXPONENTIAL falloff in radius, not a linear one: a linear ramp is
-   already fringing at half-field, which reads as overall colour mush rather
-   than as glass. Exponential keeps the centre genuinely clean and puts the
-   whole budget in the outer field -- which is what real glass does, and which
-   also means the ceiling can be raised without muddying the middle. At half
-   radius a linear ramp gives 50% of max displacement; this gives 15%. Blue gets
-   ~1.35x the red displacement because short wavelengths disperse more -- which
-   is why the cyan fringe always reads stronger than the red one on real glass.
-   The axis is deliberately off-centre and the displacement is slightly
-   anisotropic: perfectly centred, perfectly circular CA is the single thing
-   that instantly reads as a plugin rather than as glass.
+   axis, G is the reference wavelength and does not move. Blue gets ~1.35x the
+   red displacement because short wavelengths disperse more, which is why the
+   cyan fringe reads stronger than the red one on real glass. The displacement
+   is slightly anisotropic; perfectly circular, perfectly centred CA is the one
+   thing that instantly reads as a plugin rather than as glass.
 
    Vignetting is NOT a gamma-space luminance multiply. That is the Lightroom
-   model and it is exactly why LR vignettes look digital: corners crush toward
-   black and go muddy. On film, less corner light puts those pixels in the TOE
-   of the characteristic curve, where the stock is less contrasty -- so corners
-   go MILKY rather than black, they desaturate, and (because the three emulsion
-   layers have staggered toes, the cyan layer sitting lowest on most C41 stock)
-   they drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog
-   term that lifts the corner blacks, desaturate, shift warm.
+   model and it is why LR vignettes look digital: corners crush toward black
+   and go muddy. On film, less corner light puts those pixels in the TOE of the
+   characteristic curve, where the stock is less contrasty -- so corners go
+   MILKY rather than black, they desaturate, and (because the three emulsion
+   layers have staggered toes, the cyan layer lowest on most C41 stock) they
+   drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog term
+   that lifts the corner blacks, desaturate, shift warm.
    ========================================================================== */
-const LN_CA_MAX     = 0.0040; // max CORNER displacement as a fraction of corner radius
-const LN_CA_EXP     = 3.5;    // exponential falloff steepness (see lnCaLUT)
-/* Spread mixes two ways of distributing the same displacement budget:
-   uniform (0) -- a flat translation of R and B, identical everywhere in the
-     frame, so colours separate on a centred subject too. This is the "Linear
-     Aberration" behaviour, and it is the one that actually reads as "the
-     colours are coming apart" on an ordinary photograph.
-   radial  (1) -- the exponential-falloff radial scale: clean centre, the whole
-     budget in the corners. Physically what a lens does, but on a real photo
-     with a centred subject and smooth corners there is nothing there to fringe
-     and the effect is invisible no matter how far the amount slider goes. */
-const LN_CA_DIR_X   = 0.94;   // direction of the uniform translation (unit vector)
-const LN_CA_DIR_Y   = 0.34;
+const LN_CA_MAX     = 0.0075; // corner displacement as a fraction of corner radius
 const LN_CA_BLUE_K  = 1.35;   // blue disperses more than red
 const LN_CA_CX      = 0.018;  // optical axis offset, fraction of min(w,h)
 const LN_CA_CY      = -0.012;
@@ -823,27 +807,12 @@ const LN_VIG_T      = 0.90;   // field-width term in the cos^4 falloff
 const LN_VIG_KNEE   = 0.55;   // where mechanical cutoff starts, fraction of radius
 const LN_VIG_FOG    = 0.006;  // linear-light fog at full falloff -- the toe lift.
 // Calibrated so a pure-black corner lands near sRGB 14 at max vignette: milky,
-// which is the point, but not a grey haze. At 0.030 the lift cancelled most of
-// the darkening on corners that were already dark to begin with.
+// which is the point, but not the grey haze a larger value gives. At 0.030 the
+// lift cancelled most of the darkening on corners that were already dark.
 const LN_VIG_DESAT  = 0.45;   // chroma pulled toward luma at full falloff
 const LN_VIG_WARM_R = 0.10;   // linear-light gain on R at full falloff
 const LN_VIG_WARM_B = 0.06;   // linear-light cut on B at full falloff
-const LN_VIG_DECENT = 0.5;    // vignette shares the axis, at half the offset
-/* Axial ("purple") fringing. Lateral CA is radial and only shows on hard edges
-   in the OUTER field, so on a centred subject or a low-contrast scene it is
-   structurally invisible no matter how far its slider goes. Axial CA is the
-   other half of the phenomenon and behaves oppositely: driven by HIGHLIGHT
-   PROXIMITY, not radius, so it lands on backlit edges, blown windows and
-   speculars wherever they sit in the frame. Physically it is the focus plane
-   spreading across wavelengths plus microlens crosstalk; visually it is the
-   magenta halo just OUTSIDE a blown area -- which is what most people actually
-   recognise as "chromatic aberration" when they look at a photograph. */
-const LN_FR_LO      = 0.62;   // normalised luma where the highlight mask starts
-const LN_FR_HI      = 0.94;   // ...and where it saturates
-const LN_FR_RADIUS  = 0.006;  // halo spread as a fraction of min(w,h)
-const LN_FR_MAX     = 34;     // peak tint in 8-bit levels at slider 100
-const LN_FR_G_K     = 0.45;   // green pulled down at 45% of the R/B push
-const LN_FR_RAD_MIN = 0.55;   // radial modulation: still 55% strong on the axis
+const LN_LUT_N      = 2048;
 const LN_ROWS_CHUNK = 256;
 
 const LN_S2L = new Float32Array(256);
@@ -859,62 +828,27 @@ function lnEncode(v){
   const f = v*LN_ENC_N, i = f|0;
   return LN_L2S[i] + (LN_L2S[i+1]-LN_L2S[i])*(f-i);
 }
+function lnDecode(v){
+  const i = v|0;
+  return LN_S2L[i] + (LN_S2L[i<255?i+1:255]-LN_S2L[i])*(v-i);
+}
 function lnRound8(v){ return v <= 0 ? 0 : (v >= 255 ? 255 : (v+0.5)|0); }
-function lnStep(lo, hi, v){
-  let t = (v-lo)/(hi-lo);
-  if (t <= 0) return 0;
-  if (t >= 1) return 1;
-  return t*t*(3-2*t);
-}
-/* Separable box blur, 3 passes ~ gaussian. dst may alias src. */
-function lnBoxBlur3(src, dst, tmp, w, h, r){
-  if (r < 1){ if (dst !== src) dst.set(src.subarray(0, w*h)); return; }
-  const inv = 1/(2*r+1);
-  const a = src, b = tmp;
-  for (let p=0;p<3;p++){
-    for (let y=0;y<h;y++){
-      const row=y*w; let acc=0;
-      for (let x=-r;x<=r;x++) acc += a[row + (x<0?0:(x>=w?w-1:x))];
-      for (let x=0;x<w;x++){
-        b[row+x]=acc*inv;
-        acc -= a[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
-        acc += a[row + (x+r+1>=w?w-1:x+r+1)];
-      }
-    }
-    for (let x=0;x<w;x++){
-      let acc=0;
-      for (let y=-r;y<=r;y++) acc += b[(y<0?0:(y>=h?h-1:y))*w + x];
-      for (let y=0;y<h;y++){
-        a[y*w+x]=acc*inv;
-        acc -= b[(y-r<0?0:(y-r>=h?h-1:y-r))*w + x];
-        acc += b[(y+r+1>=h?h-1:y+r+1)*w + x];
-      }
-    }
-  }
-  if (dst !== a) dst.set(a.subarray(0, w*h));
-}
 
-/* 0 at the axis, 1 at the farthest corner.
-   f=0 -> true cos^4 optical falloff: starts dropping immediately, gradual.
-   f=1 -> mechanical cutoff: flat across the centre, fast roll at the edge.
-   NB this is deliberately NOT "raise the cos^4 exponent": once the curve is
-   renormalised to reach 1 at the corner, a steeper exponent darkens the MID
-   field harder, which is the opposite of the mechanical look. */
-/* CA displacement falloff: 0 at the axis, 1 at the farthest corner, rising
-   exponentially rather than linearly. */
-function lnCaLUT(steps){
-  const lut = new Float32Array(steps+1);
-  const den = Math.exp(LN_CA_EXP) - 1;
-  for (let i=0;i<=steps;i++) lut[i] = (Math.exp(LN_CA_EXP*(i/steps)) - 1)/den;
-  return lut;
-}
-
-function lnFalloffLUT(f, steps){
-  const lut = new Float32Array(steps+1);
+/* The shared coverage curve: 0 on the axis, 1 at the farthest corner.
+   f=0 -> true cos^4 optical falloff: begins immediately and reaches well into
+          the middle of the frame. Wide coverage.
+   f=1 -> mechanical cutoff: flat across the centre, then a fast roll at the
+          edge, the way a hood or a stacked filter clips the cone.
+   Deliberately NOT "raise the cos^4 exponent": once renormalised to reach 1 at
+   the corner, a steeper exponent darkens the MID field harder -- the opposite
+   of the mechanical look. Blending two curves keeps both ends meaningful.
+   Note g(u) ~ u^2 near the axis, so the g/r used by CA stays finite there. */
+function lnCoverageLUT(f){
+  const lut = new Float32Array(LN_LUT_N+1);
   const raw = (u) => Math.pow(1 + (u*LN_VIG_T)*(u*LN_VIG_T), -2);
   const r1 = raw(1), denom = (1-r1) || 1;
-  for (let i=0;i<=steps;i++){
-    const u = i/steps;
+  for (let i=0;i<=LN_LUT_N;i++){
+    const u = i/LN_LUT_N;
     const soft = (1-raw(u))/denom;
     let t = (u-LN_VIG_KNEE)/(1-LN_VIG_KNEE);
     t = t<=0 ? 0 : (t>=1 ? 1 : t);
@@ -923,38 +857,6 @@ function lnFalloffLUT(f, steps){
   return lut;
 }
 
-/* The two hot loops live in plain sync functions, NOT inline in the async
-   stage below. V8 will not optimise a loop that sits in the body of an async
-   function containing awaits, and inline these ran ~6x slower for identical
-   arithmetic. Stage D already uses this shape (ccBand); same reason. */
-function lnCaChunk(src, out, w, yStart, yEnd, cx, cy, caRMax, caLut, lutN,
-                   dMaxR, dMaxB, wm1, hm1, sp){
-  const uniR = (1-sp)*dMaxR, uniB = (1-sp)*dMaxB;
-  for (let y=yStart; y<yEnd; y++){
-    const dy = y-cy;
-    for (let x=0; x<w; x++){
-      const i = (y*w+x)*4;
-      const dx = x-cx;
-      const r = Math.sqrt(dx*dx + dy*dy);
-      // Total offset in px = uniform translation + radial term. The uniform
-      // part has no 1/r, so there is no singularity on the axis and the effect
-      // survives on a centred subject -- which is the entire point of it.
-      let oxR = uniR*LN_CA_DIR_X, oyR = uniR*LN_CA_DIR_Y;
-      let oxB = uniB*LN_CA_DIR_X, oyB = uniB*LN_CA_DIR_Y;
-      if (sp > 0 && r > 0.5){
-        const fi = (r/caRMax)*lutN, fi0 = fi|0;
-        const g = fi0 >= lutN ? caLut[lutN] : caLut[fi0] + (caLut[fi0+1]-caLut[fi0])*(fi-fi0);
-        const kR = sp*dMaxR*g/r, kB = sp*dMaxB*g/r;
-        oxR += dx*kR; oyR += dy*kR*LN_CA_ANISO_Y;
-        oxB += dx*kB; oyB += dy*kB*LN_CA_ANISO_Y;
-      }
-      out[i]   = lnRound8(lnSamp(src, w, wm1, hm1, 0, x+oxR, y+oyR));
-      out[i+1] = src[i+1];
-      out[i+2] = lnRound8(lnSamp(src, w, wm1, hm1, 2, x+oxB, y+oyB));
-      out[i+3] = src[i+3];
-    }
-  }
-}
 function lnSamp(src, w, wm1, hm1, off, x, y){
   if (x < 0) x = 0; else if (x > wm1) x = wm1;
   if (y < 0) y = 0; else if (y > hm1) y = hm1;
@@ -966,36 +868,32 @@ function lnSamp(src, w, wm1, hm1, off, x, y){
   const t = a + (b-a)*fx;
   return t + ((c + (d-c)*fx) - t)*fy;
 }
-function lnLin(v){
-  const i = v|0;
-  return LN_S2L[i] + (LN_S2L[i<255?i+1:255]-LN_S2L[i])*(v-i);
-}
-function lnComposeChunk(out, halo, w, yStart, yEnd, cx, cy, vx, vy, caRMax, rMax,
-                        fall, lutN, depth, frK){
+
+/* The hot loop lives in a plain sync function, not inline in the async stage
+   below, matching what Stage D does with ccBand. */
+function lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov,
+                 dMaxR, dMaxB, depth, wm1, hm1){
   for (let y=yStart; y<yEnd; y++){
-    const vdy = y-vy, fdy = y-cy;
+    const dy = y-cy;
     for (let x=0; x<w; x++){
       const i = (y*w+x)*4;
-      let R = out[i], G = out[i+1], B = out[i+2];
-      if (frK > 0){
-        const fdx = x-cx;
-        // Mildly radius-modulated -- real axial CA does worsen off-axis -- but
-        // NOT gated the way lateral CA is, or it would vanish on the subject,
-        // which is the whole reason this term exists.
-        const ru = Math.sqrt(fdx*fdx + fdy*fdy)/caRMax;
-        const k = frK*halo[y*w+x]*(LN_FR_RAD_MIN + (1-LN_FR_RAD_MIN)*ru);
-        R += k; B += k; G -= k*LN_FR_G_K;
-      }
+      const dx = x-cx;
+      const r = Math.sqrt(dx*dx + dy*dy);
+      // ONE lookup drives both effects, so they always cover the same ground.
+      const fi = (r/rMax)*LN_LUT_N, fi0 = fi|0;
+      const g = fi0 >= LN_LUT_N ? cov[LN_LUT_N] : cov[fi0] + (cov[fi0+1]-cov[fi0])*(fi-fi0);
+
+      let R, G, B;
+      if (dMaxR !== 0 && r > 0.5){
+        const kR = dMaxR*g/r, kB = dMaxB*g/r;
+        R = lnSamp(src, w, wm1, hm1, 0, x+dx*kR, y+dy*kR*LN_CA_ANISO_Y);
+        G = src[i+1];
+        B = lnSamp(src, w, wm1, hm1, 2, x+dx*kB, y+dy*kB*LN_CA_ANISO_Y);
+      } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
+
       if (depth > 0){
-        const dxv = x-vx;
-        const u = Math.sqrt(dxv*dxv + vdy*vdy)/rMax;
-        const fi = u*lutN, fi0 = fi|0;
-        const g = fi0 >= lutN ? fall[lutN] : fall[fi0] + (fall[fi0+1]-fall[fi0])*(fi-fi0);
         const t = depth*g, v = 1-t;
-        const cR = R<=0?0:(R>=255?255:R), cG = G<=0?0:(G>=255?255:G), cB = B<=0?0:(B>=255?255:B);
-        // The fringe pass leaves fractional channel values, so interpolate the
-        // decode LUT rather than truncating into it.
-        let lr = lnLin(cR)*v, lg = lnLin(cG)*v, lb = lnLin(cB)*v;
+        let lr = lnDecode(R)*v, lg = lnDecode(G)*v, lb = lnDecode(B)*v;
         const fog = LN_VIG_FOG*t;                    // toe lift: milky, not crushed
         lr += fog; lg += fog; lb += fog;
         const luma = 0.2126*lr + 0.7152*lg + 0.0722*lb;
@@ -1006,85 +904,36 @@ function lnComposeChunk(out, halo, w, yStart, yEnd, cx, cy, vx, vy, caRMax, rMax
         out[i]   = lnRound8(lnEncode(lr));
         out[i+1] = lnRound8(lnEncode(lg));
         out[i+2] = lnRound8(lnEncode(lb));
-      } else if (frK > 0){
+      } else {
         out[i] = lnRound8(R); out[i+1] = lnRound8(G); out[i+2] = lnRound8(B);
       }
+      out[i+3] = src[i+3];
     }
   }
 }
 
-async function lensStage(src, w, h, ca, vig, falloff, fringe, spread){
-  fringe = fringe || 0;
-  spread = spread === undefined ? 1 : spread;
-  if (!(ca > 0 || vig > 0 || fringe > 0)) return null; // caller keeps input as-is
+async function lensStage(src, w, h, amount, vig, falloff){
+  if (!(amount > 0 || vig > 0)) return null;   // caller keeps the input as-is
   const out = new Uint8ClampedArray(w*h*4);
   const minWH = Math.min(w,h);
   const cx = w/2 + LN_CA_CX*minWH, cy = h/2 + LN_CA_CY*minWH;
-  let caRMax = 0;
-  for (const p of [[0,0],[w,0],[0,h],[w,h]]){
-    const d = Math.hypot(p[0]-cx, p[1]-cy); if (d > caRMax) caRMax = d;
-  }
-  const CA_LUT_N = 2048;
-  const caLut = ca > 0 ? lnCaLUT(CA_LUT_N) : null;
-  const dMaxR = ca*LN_CA_MAX*caRMax;            // px of displacement at the corner
-  const dMaxB = -dMaxR*LN_CA_BLUE_K;            // blue image is the smaller one
-  const vx = w/2 + LN_CA_CX*minWH*LN_VIG_DECENT;
-  const vy = h/2 + LN_CA_CY*minWH*LN_VIG_DECENT;
   let rMax = 0;
   for (const p of [[0,0],[w,0],[0,h],[w,h]]){
-    const d = Math.hypot(p[0]-vx, p[1]-vy); if (d > rMax) rMax = d;
+    const d = Math.hypot(p[0]-cx, p[1]-cy); if (d > rMax) rMax = d;
   }
-  const LUT_N = 2048;
-  const fall = vig > 0 ? lnFalloffLUT(falloff, LUT_N) : null;
+  const cov = lnCoverageLUT(falloff);
+  const dMaxR = amount*LN_CA_MAX*rMax;   // px of displacement at the corner
+  const dMaxB = -dMaxR*LN_CA_BLUE_K;     // blue image is the smaller one
   const depth = vig*LN_VIG_MAX;
-  const wm1 = w-1, hm1 = h-1;
 
-
-  /* ---- pass 1: lateral CA into out (or a straight copy) ---- */
-  if (dMaxR !== 0){
-    for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
-      const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
-      lnCaChunk(src, out, w, yStart, yEnd, cx, cy, caRMax, caLut, CA_LUT_N,
-                dMaxR, dMaxB, w-1, h-1, spread);
-      if (yEnd < h){ console.log('Stage E CA: ' + Math.round(yEnd/h*100) + '%');
-                     await new Promise(r => setTimeout(r, 0)); }
-    }
-  } else {
-    out.set(src);
-  }
-
-  /* ---- pass 2: highlight halo mask, for axial fringing ---- */
-  let halo = null;
-  if (fringe > 0){
-    const n = w*h;
-    const hi = new Float32Array(n);
-    for (let p=0, i=0; p<n; p++, i+=4){
-      const L = (0.299*out[i] + 0.587*out[i+1] + 0.114*out[i+2])/255;
-      hi[p] = lnStep(LN_FR_LO, LN_FR_HI, L);
-    }
-    await new Promise(r => setTimeout(r, 0));
-    const tmp = new Float32Array(n);
-    halo = new Float32Array(n);
-    halo.set(hi);
-    lnBoxBlur3(halo, halo, tmp, w, h, Math.max(1, Math.round(LN_FR_RADIUS*Math.min(w,h))));
-    // The fringe lives just OUTSIDE the blown area, not inside it: subtract the
-    // hard mask so the halo does not paint over the highlight itself.
-    let mx = 0;
-    for (let p=0;p<n;p++){ const v = halo[p]*(1-hi[p]); halo[p] = v<0?0:v; if (v>mx) mx=v; }
-    if (mx > 1e-4){ const k = 1/mx; for (let p=0;p<n;p++) halo[p] *= k; }
-    await new Promise(r => setTimeout(r, 0));
-  }
-
-  /* ---- pass 3: fringing + vignette ---- */
-  const frK = fringe*LN_FR_MAX;
   for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
     const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
-    lnComposeChunk(out, halo, w, yStart, yEnd, cx, cy, vx, vy, caRMax, rMax,
-                   fall, LUT_N, depth, frK);
-    if (yEnd < h){ console.log('Stage E: ' + Math.round(yEnd/h*100) + '%');
-                   await new Promise(r => setTimeout(r, 0)); }
+    lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov, dMaxR, dMaxB, depth, w-1, h-1);
+    if (yEnd < h){
+      console.log('Stage E progress: ' + Math.round(yEnd/h*100) + '%');
+      await new Promise(r => setTimeout(r, 0));
+    }
   }
-
   return out;
 }
 
@@ -1303,15 +1152,14 @@ self.onmessage = async function(e){
     // Stage E (Lens): CA + vignette, on top of the Stage D result. Chained
     // cache -- it re-runs when its own params change OR when the thing beneath
     // it changed, so lastLensState tracks the Stage D key as well.
-    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0) + '|' +
-                    (p.fringe||0) + '|' + (p.spread === undefined ? 1 : p.spread);
+    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0);
     if (lastLensState.key !== lensKey || lastLensState.srcKey !== cleanKey ||
         lastLensState.w !== w || lastLensState.h !== h){
-      if ((p.ca||0) === 0 && (p.vignette||0) === 0 && (p.fringe||0) === 0) {
+      if ((p.ca||0) === 0 && (p.vignette||0) === 0) {
         cachedLensSrc = null;
       } else {
         console.log('render: Stage E lens ' + w + 'x' + h + ' (' + lensKey + ')...');
-        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0, p.fringe||0, p.spread === undefined ? 1 : p.spread);
+        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0);
         console.log('render: Stage E done');
       }
       lastLensState = { key: lensKey, srcKey: cleanKey, w, h };
@@ -1536,15 +1384,15 @@ const presets = {
   // Every preset lists all keys explicitly, including the CCD Clean trio.
   // The pre-existing five keep olpf/detail/chroma at 0, so they render exactly
   // as they did before this feature existed.
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 },
-  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30, fringe: 35, spread: 0 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40, fringe: 0, spread: 0 }
+  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
+  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
+  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
+  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
+  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 }
 };
 
 /* ---------- State & Elements ---------- */
@@ -1560,9 +1408,7 @@ const els = {
   chroma: document.getElementById("chroma"),
   ca: document.getElementById("ca"),
   vignette: document.getElementById("vignette"),
-  falloff: document.getElementById("falloff"),
-  fringe: document.getElementById("fringe"),
-  spread: document.getElementById("spread")
+  falloff: document.getElementById("falloff")
 };
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
@@ -1895,8 +1741,6 @@ function readParams(){
     ca: +els.ca.value / 100,
     vignette: +els.vignette.value / 100,
     falloff: +els.falloff.value / 100,
-    fringe: +els.fringe.value / 100,
-    spread: +els.spread.value / 100,
   };
 }
 
@@ -1914,8 +1758,6 @@ function updateReadout(){
   vEls.ca.textContent = els.ca.value;
   vEls.vignette.textContent = els.vignette.value;
   vEls.falloff.textContent = els.falloff.value;
-  vEls.fringe.textContent = els.fringe.value;
-  vEls.spread.textContent = els.spread.value;
 }
 
 /* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
@@ -2224,8 +2066,7 @@ for(let key in els){
     // the gaussian noise fields are unaffected by cleaning, and regenerating
     // them is the single most expensive step in the pipeline.
     const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma' ||
-                     key === 'ca' || key === 'vignette' || key === 'falloff' ||
-                     key === 'fringe' || key === 'spread');
+                     key === 'ca' || key === 'vignette' || key === 'falloff');
     if (!isHeavy && !isClean && hasImage) drawGPUPreview(readParams(), isSplitScreen);
     requestRender(isHeavy);
   });
@@ -2257,8 +2098,6 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     els.ca.value = p.ca || 0;
     els.vignette.value = p.vignette || 0;
     els.falloff.value = (p.falloff === undefined ? 40 : p.falloff);
-    els.fringe.value = p.fringe || 0;
-    els.spread.value = p.spread === undefined ? 0 : p.spread;
     updateReadout();
     requestRender(true);
   }
@@ -2269,7 +2108,7 @@ document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
   els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
   els.olpf.value = 0; els.detail.value = 0; els.chroma.value = 0;
-  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40; els.fringe.value = 0; els.spread.value = 0;
+  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40;
   updateReadout(); requestRender(true);
 });
 
