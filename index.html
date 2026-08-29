@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.25</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.26</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -432,7 +432,7 @@
     <h2 style="margin-top:22px">Lens</h2>
     <p>Difetti ottici, applicati <em>dopo</em> CCD Clean e <em>prima</em> della grana: l'ordine e' fisico, l'obiettivo viene prima dell'emulsione. Applicarli dopo sposterebbe e scurirebbe i granuli stessi, cosa che sulla pellicola vera non succede.</p>
     <ul>
-      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La distribuzione segue la <em>stessa curva di copertura della vignettatura</em>, governata dallo slider Falloff: i due effetti sono sempre d'accordo su dove sia il "bordo" del fotogramma. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
+      <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La distribuzione segue la <em>stessa curva di copertura della vignettatura</em>, governata dallo slider Falloff: i due effetti sono sempre d'accordo su dove sia il "bordo" del fotogramma. Lo stesso slider porta con se' anche una <em>sbavatura radiale</em> che cresce col raggio: un obiettivo non si limita a separare le lunghezze d'onda, non riesce anche a metterle a fuoco, e i due difetti crescono nella stessa direzione. Per questo la sbavatura non e' applicata dopo la separazione ma dentro: ogni canale viene campionato su piu' punti disposti lungo il proprio spostamento radiale, cosi' i due difetti nascono da un'unica operazione come nascono da un'unica lente. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
       <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
       <li><strong>Falloff:</strong> la curva di copertura condivisa da aberrazione e vignettatura &mdash; decide <em>quanta parte</em> del fotogramma toccano, non quanto sono forti. A <strong>0</strong> e' la caduta ottica cos&sup4; reale: parte subito dal centro e arriva ben dentro l'immagine, quindi l'aberrazione si vede anche sul soggetto centrale. A <strong>100</strong> e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce. Con soggetti centrali tienilo basso, altrimenti l'aberrazione non ha niente da toccare.</li>
     </ul>
@@ -782,7 +782,8 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    high -- the curve, not the amount, decides how much of the frame it touches.
 
    CA is lateral (transverse) only: R and B are radially displaced about the
-   axis, G is the reference wavelength and does not move. Blue gets ~1.35x the
+   axis; G is the reference wavelength and is not displaced, though it does get
+   the radial smear, since green is out of focus at the edges too. Blue gets ~1.35x the
    red displacement because short wavelengths disperse more, which is why the
    cyan fringe reads stronger than the red one on real glass. The displacement
    is slightly anisotropic; perfectly circular, perfectly centred CA is the one
@@ -797,7 +798,16 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog term
    that lifts the corner blacks, desaturate, shift warm.
    ========================================================================== */
-const LN_CA_MAX     = 0.0075; // corner displacement as a fraction of corner radius
+const LN_CA_MAX     = 0.0180; // corner displacement as a fraction of corner radius
+/* Radial smear, carried by the same slider. A lens does not merely separate
+   the wavelengths, it also fails to focus them, and both defects grow with
+   field height in the same radial direction. So rather than blurring after the
+   split, each channel is sampled over several taps spread ALONG its own radial
+   displacement: separation and smear come out of one operation, the way they
+   come out of one piece of glass. Green is smeared too, at zero displacement --
+   it is out of focus at the edges as well. */
+const LN_CA_BLUR    = 0.55;   // smear length as a fraction of the displacement
+const LN_CA_TAPS    = 7;      // tap cap; more only matters for long smears
 const LN_CA_BLUE_K  = 1.35;   // blue disperses more than red
 const LN_CA_CX      = 0.018;  // optical axis offset, fraction of min(w,h)
 const LN_CA_CY      = -0.012;
@@ -872,7 +882,7 @@ function lnSamp(src, w, wm1, hm1, off, x, y){
 /* The hot loop lives in a plain sync function, not inline in the async stage
    below, matching what Stage D does with ccBand. */
 function lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov,
-                 dMaxR, dMaxB, depth, wm1, hm1){
+                 dMaxR, dMaxB, blurMax, depth, wm1, hm1){
   for (let y=yStart; y<yEnd; y++){
     const dy = y-cy;
     for (let x=0; x<w; x++){
@@ -885,10 +895,26 @@ function lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov,
 
       let R, G, B;
       if (dMaxR !== 0 && r > 0.5){
-        const kR = dMaxR*g/r, kB = dMaxB*g/r;
-        R = lnSamp(src, w, wm1, hm1, 0, x+dx*kR, y+dy*kR*LN_CA_ANISO_Y);
-        G = src[i+1];
-        B = lnSamp(src, w, wm1, hm1, 2, x+dx*kB, y+dy*kB*LN_CA_ANISO_Y);
+        const ux = dx/r, uy = dy/r;            // radial unit vector
+        const dR = dMaxR*g, dB = dMaxB*g;      // displacement, px
+        const L = blurMax*g;                   // smear length, px
+        if (L < 0.5){
+          R = lnSamp(src, w, wm1, hm1, 0, x+ux*dR, y+uy*dR*LN_CA_ANISO_Y);
+          G = src[i+1];
+          B = lnSamp(src, w, wm1, hm1, 2, x+ux*dB, y+uy*dB*LN_CA_ANISO_Y);
+        } else {
+          const taps = Math.min(LN_CA_TAPS, Math.max(3, Math.round(L)));
+          const step = L/(taps-1), half = L*0.5;
+          let aR=0, aG=0, aB=0;
+          for (let t=0; t<taps; t++){
+            const o = t*step - half;
+            const oR = dR+o, oB = dB+o;
+            aR += lnSamp(src, w, wm1, hm1, 0, x+ux*oR, y+uy*oR*LN_CA_ANISO_Y);
+            aG += lnSamp(src, w, wm1, hm1, 1, x+ux*o,  y+uy*o *LN_CA_ANISO_Y);
+            aB += lnSamp(src, w, wm1, hm1, 2, x+ux*oB, y+uy*oB*LN_CA_ANISO_Y);
+          }
+          R = aR/taps; G = aG/taps; B = aB/taps;
+        }
       } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
 
       if (depth > 0){
@@ -924,11 +950,12 @@ async function lensStage(src, w, h, amount, vig, falloff){
   const cov = lnCoverageLUT(falloff);
   const dMaxR = amount*LN_CA_MAX*rMax;   // px of displacement at the corner
   const dMaxB = -dMaxR*LN_CA_BLUE_K;     // blue image is the smaller one
+  const blurMax = Math.abs(dMaxR)*LN_CA_BLUR;  // px of radial smear at the corner
   const depth = vig*LN_VIG_MAX;
 
   for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
     const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
-    lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov, dMaxR, dMaxB, depth, w-1, h-1);
+    lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov, dMaxR, dMaxB, blurMax, depth, w-1, h-1);
     if (yEnd < h){
       console.log('Stage E progress: ' + Math.round(yEnd/h*100) + '%');
       await new Promise(r => setTimeout(r, 0));
@@ -1136,7 +1163,9 @@ self.onmessage = async function(e){
     // reads. Cached on its own three params, so dragging a grain slider never
     // re-runs it. Cheap no-op when all three are 0.
     const cleanKey = (p.olpf||0) + '|' + (p.detail||0) + '|' + (p.chroma||0);
+    let cleanRan = false;
     if (lastCleanState.key !== cleanKey || lastCleanState.w !== w || lastCleanState.h !== h){
+      cleanRan = cleanKey !== '0|0|0';
       if (cleanKey === '0|0|0') {
         cachedCleanSrc = null;
       } else {
@@ -1153,8 +1182,10 @@ self.onmessage = async function(e){
     // cache -- it re-runs when its own params change OR when the thing beneath
     // it changed, so lastLensState tracks the Stage D key as well.
     const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0);
+    let lensRan = false;
     if (lastLensState.key !== lensKey || lastLensState.srcKey !== cleanKey ||
         lastLensState.w !== w || lastLensState.h !== h){
+      lensRan = (p.ca||0) > 0 || (p.vignette||0) > 0;
       if ((p.ca||0) === 0 && (p.vignette||0) === 0) {
         cachedLensSrc = null;
       } else {
@@ -1345,7 +1376,11 @@ self.onmessage = async function(e){
     const t3 = performance.now();
     const timing = {
       total: +(t3-t0).toFixed(1),
-      stageD: +(tD-t0).toFixed(1), stageE: +(tE-tD).toFixed(1),
+      // Explicit ran-flags, not wall clock: on a loaded machine a cached stage
+      // can still measure tens of ms of scheduler noise, which made a
+      // timing-based cache assertion flaky.
+      stageD: +(tD-t0).toFixed(1), stageDRan: cleanRan,
+      stageE: +(tE-tD).toFixed(1), stageERan: lensRan,
       stageA0: +(t1-tE).toFixed(1), stageA0Ran: needsRaw,
       stageA: +(t2-t1).toFixed(1), stageARan: needsBlur,
       stageBC: +(t3-t2).toFixed(1), stageBRan: needsCompose,
@@ -1452,7 +1487,7 @@ renderWorker.onmessage = (e) => {
     const t = msg.timing;
     window.__debugLog && window.__debugLog(
       `render ${t.w}x${t.h}: total ${t.total}ms ` +
-      `[D:${t.stageD}ms E:${t.stageE}ms A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
+      `[D:${t.stageD}ms${t.stageDRan?'':' skip'} E:${t.stageE}ms${t.stageERan?'':' skip'} A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
     );
   }
   if (msg.gpuData) {
