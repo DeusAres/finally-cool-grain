@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.26</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.27</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -1414,6 +1414,29 @@ document.getElementById('close-help').addEventListener('click', () => modal.clas
 modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.remove('active'); });
 
 /* ---------- Presets ---------- */
+// One list, used by save, load and reset alike. Previously each of those had
+// its own hand-written sequence of assignments, which is how they drifted apart
+// every time a slider was added.
+const SLIDER_KEYS = ['intensity','size','clump','bias','lift','chan',
+                     'olpf','detail','chroma','ca','vignette','falloff'];
+// Reset means every effect off -- a true identity pass, not a "nice starting
+// look". Everything goes to 0 except bias, which is an exponent whose slider
+// runs 20..150 and whose NEUTRAL value is 100; 0 is neither reachable nor
+// meaningful there, and assigning it just clamps to 20, which is a setting, not
+// an absence of one.
+const OFF = { intensity:0, size:0, clump:0, bias:100, lift:0, chan:0,
+              olpf:0, detail:0, chroma:0, ca:0, vignette:0, falloff:0 };
+
+function applyValues(p){
+  // Any key the caller omits falls back to OFF, so a partial object (an old
+  // save, a preset written before a slider existed) can never leave a slider
+  // holding a value from whatever was on screen a moment ago.
+  for (const k of SLIDER_KEYS){
+    els[k].value = (p && p[k] !== undefined && p[k] !== null) ? p[k] : OFF[k];
+  }
+  updateReadout();
+}
+
 const presets = {
   custom: null,
   // Every preset lists all keys explicitly, including the CCD Clean trio.
@@ -1427,7 +1450,10 @@ const presets = {
   ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
   cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
   compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
-  saved1: { intensity: 60, size: 3, clump: 6, bias: 65, lift: 18, chan: 72, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 }
+  // NB: no 'saved1' entry here. That slot is the user's localStorage save and
+  // is resolved at selection time -- it used to be a hardcoded object, so
+  // picking "Saved Custom 1" returned numbers that had nothing to do with what
+  // Save Local had just written.
 };
 
 /* ---------- State & Elements ---------- */
@@ -2119,21 +2145,20 @@ document.getElementById("btn-split").addEventListener("click", function() {
 
 document.getElementById("preset-sel").addEventListener("change", (e) => {
   const val = e.target.value;
-  if(presets[val]) {
-    const p = presets[val];
-    els.intensity.value = p.intensity;
-    els.size.value = p.size;
-    els.clump.value = p.clump;
-    els.bias.value = p.bias;
-    els.lift.value = p.lift || 0;
-    els.chan.value = p.chan;
-    els.olpf.value = p.olpf || 0;
-    els.detail.value = p.detail || 0;
-    els.chroma.value = p.chroma || 0;
-    els.ca.value = p.ca || 0;
-    els.vignette.value = p.vignette || 0;
-    els.falloff.value = (p.falloff === undefined ? 40 : p.falloff);
-    updateReadout();
+  if (val === 'saved1'){
+    const saved = readSaved();
+    if (!saved){
+      window.__debugLog && window.__debugLog('preset saved1: nothing stored yet');
+      e.target.value = 'custom';
+      return;
+    }
+    applyValues(saved.values);
+    if (saved.seedId) currentSeedId = saved.seedId;
+    requestRender(true);
+    return;
+  }
+  if (presets[val]) {
+    applyValues(presets[val]);
     requestRender(true);
   }
 });
@@ -2141,25 +2166,57 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
 document.getElementById("reseed").addEventListener("click", () => { currentSeedId++; requestRender(true); });
 document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
-  els.intensity.value = 28; els.size.value = 16; els.clump.value = 55; els.bias.value = 60; els.lift.value = 0; els.chan.value = 70;
-  els.olpf.value = 0; els.detail.value = 0; els.chroma.value = 0;
-  els.ca.value = 0; els.vignette.value = 0; els.falloff.value = 40;
-  updateReadout(); requestRender(true);
+  applyValues(OFF);
+  requestRender(true);
 });
 
 /* ---------- Local Save/Load (localStorage) ---------- */
-const LS_KEY = "grainpro_custom_v1";
+// Versioned payload with an explicit values object. The old format was a flat
+// map written with `for (let key in els)`, so a save made before a slider
+// existed restored only the keys it happened to contain and left the rest
+// sitting at whatever the current session had -- which is why a load could look
+// nothing like what was saved. applyValues() now fills every missing key from
+// OFF, and the seed travels with the save so the grain pattern comes back too.
+const LS_KEY = "grainpro_custom_v2";
+const LS_KEY_LEGACY = "grainpro_custom_v1";
+
+function readSaved(){
+  try {
+    const raw = localStorage.getItem(LS_KEY);
+    if (raw){
+      const d = JSON.parse(raw);
+      if (d && d.values) return d;
+    }
+    // Migrate a v1 save: flat map of slider -> value, no seed.
+    const legacy = localStorage.getItem(LS_KEY_LEGACY);
+    if (legacy){
+      const d = JSON.parse(legacy);
+      if (d && typeof d === 'object') return { v:1, values:d, seedId:null };
+    }
+  } catch(e){
+    window.__debugLog && window.__debugLog('readSaved FAILED: ' + (e.message||String(e)), true);
+  }
+  return null;
+}
+
 document.getElementById("save-local").addEventListener("click", () => {
   const btn = document.getElementById("save-local");
   const old = btn.textContent;
   try {
-    const data = {};
-    for (let key in els) data[key] = els[key].value;
-    localStorage.setItem(LS_KEY, JSON.stringify(data));
+    const values = {};
+    for (const k of SLIDER_KEYS) values[k] = els[k].value;
+    const payload = { v:2, values, seedId: currentSeedId, at: Date.now() };
+    localStorage.setItem(LS_KEY, JSON.stringify(payload));
     // Verify it actually persisted (some browsers accept the call but silently
     // don't store anything, e.g. private browsing / file:// origin quirks).
     const check = localStorage.getItem(LS_KEY);
     if (!check) throw new Error('localStorage.getItem returned nothing right after setItem');
+    const back = JSON.parse(check);
+    for (const k of SLIDER_KEYS){
+      if (String(back.values[k]) !== String(els[k].value)){
+        throw new Error('round-trip mismatch on ' + k);
+      }
+    }
     window.__debugLog && window.__debugLog('Save Local OK: ' + check);
     btn.textContent = "Saved!";
   } catch(err) {
@@ -2168,16 +2225,14 @@ document.getElementById("save-local").addEventListener("click", () => {
   }
   setTimeout(() => { btn.textContent = old; }, 1200);
 });
+
 (function loadLocal(){
-  try {
-    const raw = localStorage.getItem(LS_KEY);
-    if (!raw) { window.__debugLog && window.__debugLog('loadLocal: nothing saved yet'); return; }
-    const data = JSON.parse(raw);
-    for (let key in data) if (els[key]) els[key].value = data[key];
-    document.getElementById("preset-sel").value = "custom";
-    updateReadout();
-    window.__debugLog && window.__debugLog('loadLocal restored: ' + raw);
-  } catch(e) { window.__debugLog && window.__debugLog('loadLocal FAILED: ' + (e.message||String(e)), true); }
+  const saved = readSaved();
+  if (!saved){ window.__debugLog && window.__debugLog('loadLocal: nothing saved yet'); return; }
+  applyValues(saved.values);
+  if (saved.seedId) currentSeedId = saved.seedId;
+  document.getElementById("preset-sel").value = "custom";
+  window.__debugLog && window.__debugLog('loadLocal restored v' + (saved.v||1));
 })();
 
 /* ---------- Max Quality, Min Size JPG Download (jpegli) ---------- */
