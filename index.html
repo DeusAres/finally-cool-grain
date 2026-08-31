@@ -282,7 +282,7 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.27</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.29</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
@@ -421,10 +421,11 @@
       <li><strong>Shadow Lift:</strong> Toe filmico: solleva il pavimento del nero comprimendo le ombre. Mezzitoni e alte luci non toccati.</li>
       <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
     </ul>
+    <p><strong>Dimensione della grana:</strong> il valore dello slider e' <em>relativo al fotogramma</em>, non un raggio in pixel. Un cristallo di alogenuro d'argento ha dimensione fissa sul negativo, quindi la stessa pellicola da' la stessa grana a qualunque ingrandimento. Prima era un raggio in pixel, e la stessa impostazione produceva grana fisicamente diversa su un ritaglio da 1MP e su un originale da 12MP: i preset non erano trasferibili tra immagini. Il numero tra parentesi accanto allo slider mostra a quanti pixel corrisponde sull'immagine caricata.</p>
     <h2 style="margin-top:22px">CCD Clean</h2>
     <p>Stadio opzionale che gira <em>prima</em> della grana. Serve a togliere lo "sbratto" digitale che i sensori piccoli producono sul dettaglio ad altissima frequenza (fogliame, ghiaia, riflessi sull'acqua), lasciando stare pelle, cielo e bordi netti. A 0 su tutti e tre gli slider non tocca assolutamente nulla.</p>
     <ul>
-      <li><strong>Anti-Alias (OLPF):</strong> simula il filtro passa-basso ottico che i sensori CCD avevano davanti e i telefoni non hanno. È la causa fisica dell'aliasing sul fogliame. Sfocatura sub-pixel su tutta l'immagine (0&rarr;1.1px di sigma).</li>
+      <li><strong>Anti-Alias (OLPF):</strong> simula il filtro passa-basso ottico che i sensori CCD avevano davanti e i telefoni non hanno. È la causa fisica dell'aliasing sul fogliame. Sfocatura sub-pixel su tutta l'immagine (0&rarr;1.1px di sigma). La corsa dello slider segue una curva di potenza, non lineare: la forza della sfocatura cresce con il <em>quadrato</em> di sigma, quindi una mappatura lineare rendeva quasi morto il primo quinto di corsa. Il numero di passate del kernel e' fisso a tre: derivarlo da sigma cambiava la <em>forma</em> del kernel a meta' corsa, creando un avvallamento nella risposta.</li>
       <li><strong>Declutter:</strong> separa struttura e texture con un guided filter e attenua la texture <em>solo</em> dove la densità di gradiente è alta. Un bordo netto ha gradiente forte su una linea sola; il fogliame ce l'ha ovunque: è questo che li distingue, non il contrasto. Per questo i bordi restano, la confusione no.</li>
       <li><strong>Chroma Clean:</strong> sfoca solo Cb/Cr nelle zone dense, lasciando intatta la luminanza. È dove sta gran parte del "confuso" cromatico del digitale; i CCD ne avevano molto meno.</li>
       <li>Costo: ~0.4s per 2MP. Ha una cache sua, quindi muovere gli slider della grana non lo fa rigirare.</li>
@@ -583,6 +584,9 @@ const CC_GRAD_HI  = 25;    // |grad| above this = detailed
 const CC_DEN_LO   = 0.25;  // density below this = isolated edge
 const CC_DEN_HI   = 0.70;  // density above this = texture field
 const CC_CHROMA_R = 4;     // chroma blur radius (px)
+const CC_OLPF_MAX = 1.1;   // target gaussian sigma at slider 100, px
+const CC_OLPF_EXP = 0.75;  // slider -> sigma curve
+const CC_OLPF_PASSES = 3;  // ALWAYS three; see ccParams
 const CC_DETAIL_MAX = 0.60;// texture removed at slider 100 + full density
 const CC_BAND_ROWS  = 192; // output rows per band
 
@@ -598,12 +602,21 @@ function ccStep(lo, hi, v){
   return t * t * (3 - 2 * t);
 }
 function ccParams(olpf, detail, chroma){
-  const sigma = olpf * 1.1;              // target gaussian sigma, px
+  // Slider -> sigma is a power curve, not linear, because blur strength grows
+  // with sigma SQUARED: mapping sigma linearly left the first fifth of the
+  // travel nearly dead and crammed the effect between 20 and 60.
+  //
+  // The pass count is FIXED at three rather than derived from sigma. N passes
+  // of a 3-tap [a, 1-2a, a] kernel give variance N*2a, so any (N, a) pair
+  // hitting the target sigma is "correct" -- but the KERNEL SHAPE differs
+  // between them, and so does the high-frequency attenuation. Picking N from
+  // ceil(2*sigma^2) therefore made the response jump where N stepped from 1 to
+  // 2, a visible dip in the middle of the slider. Three passes cover the whole
+  // range (a stays under 0.25 up to sigma 1.22) with one constant shape.
+  const sigma = olpf > 0 ? CC_OLPF_MAX * Math.pow(olpf, CC_OLPF_EXP) : 0;
   let passes = 0, a = 0;
   if (sigma > 1e-4){
-    // N passes of a 3-tap [a, 1-2a, a] kernel give variance N*2a, so take the
-    // smallest N that keeps a <= 0.25 (0.25 = the full binomial [1 2 1]/4).
-    passes = Math.max(1, Math.ceil(2 * sigma * sigma));
+    passes = CC_OLPF_PASSES;
     a = Math.min(0.25, (sigma * sigma) / (2 * passes));
   }
   return { olpfPasses: passes, olpfA: a,
@@ -1090,6 +1103,17 @@ let cachedRawNoise = null; // Stage A0: raw gaussian fields, independent of size
 let lastRawParams = { w:-1, h:-1, seedId:0 };
 let cachedNoiseFields = null;
 let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
+/* Grain size is specified RELATIVE TO THE FRAME, not in pixels.
+
+   A silver halide crystal has a fixed size on the negative, so the same stock
+   yields the same grain whatever you enlarge it to. The slider used to be a
+   pixel radius, which meant one setting produced physically different grain on
+   a 1MP crop and a 12MP original -- presets simply did not transfer between
+   images. The slider value is now the radius it would have at the reference
+   long edge below (4000px = the 12MP cap this app processes at), scaled to
+   whatever is actually loaded. */
+const GRAIN_REF_LONG_EDGE = 4000;
+function grainSizePx(size, w, h){ return size * (Math.max(w, h) / GRAIN_REF_LONG_EDGE); }
 let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
 let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
 let cachedCleanSrc = null;   // Stage D output; null means "use srcData untouched"
@@ -1115,13 +1139,52 @@ let lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
   };
 });
 
-self.onmessage = async function(e){
+/* Messages are handled STRICTLY ONE AT A TIME.
+
+   The handler is async and awaits in several places (the init blur passes, the
+   per-chunk yields in stages D, E and C). An async function hands control back
+   to the event loop at every await, so without this chain the worker would
+   start handling the NEXT message while the previous one was still mid-flight.
+   That is not theoretical: loadImage() posts 'init' and then immediately posts
+   'render', so opening a second image began rendering while init was still
+   computing blurredSrc -- the render then read caches and a blurredSrc that
+   still belonged to the PREVIOUS image, at the previous dimensions, and threw
+   on a cache that init had nulled underneath it. In the browser that throw
+   escapes onmessage, no 'rendered' is ever posted, and the UI hangs on the
+   loader forever.
+
+   Serialising here fixes the whole class of problem rather than that one
+   instance, and costs nothing: the main thread already refuses to have two
+   renders outstanding. */
+let msgChain = Promise.resolve();
+self.onmessage = function(e){
+  msgChain = msgChain.then(() => handleMessage(e)).catch(err => {
+    console.log('worker: message handler failed: ' + (err && err.message || err));
+    self.postMessage({ cmd:'workerError', message: String(err && err.message || err) });
+  });
+};
+
+async function handleMessage(e){
   const msg = e.data;
 
   if (msg.cmd === 'init') {
     console.log('worker init: received ' + msg.w + 'x' + msg.h + ' (' + (msg.buffer.byteLength/1024/1024).toFixed(1) + 'MB buffer)');
     W = msg.w; H = msg.h;
     srcData = new Uint8ClampedArray(msg.buffer);
+    // Reset every piece of derived state SYNCHRONOUSLY, before the first await
+    // below, so the worker is never left holding a mix of the new source and
+    // the previous image's caches -- which are sized for the previous image.
+    blurredSrc = null;
+    cachedRawNoise = null;
+    cachedNoiseFields = null;
+    cachedGrainDelta = null;
+    cachedCleanSrc = null;
+    cachedLensSrc = null;
+    lastCleanState = { key:'', w:-1, h:-1 };
+    lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
+    lastRawParams = { w:-1, h:-1, seedId:0 };
+    lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
+    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
     const n = W*H, rC=new Float32Array(n), gC=new Float32Array(n), bC=new Float32Array(n);
     for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=srcData[i]; gC[px]=srcData[i+1]; bC[px]=srcData[i+2]; }
     console.log('worker init: planes split, starting initial softening blur (3x boxBlur passes)...');
@@ -1131,16 +1194,6 @@ self.onmessage = async function(e){
       b: new Uint8ClampedArray(await boxBlur(bC,W,H,1.5))
     };
     console.log('worker init: softening blur done');
-    cachedRawNoise = null;
-    cachedNoiseFields = null;
-    cachedGrainDelta = null;
-    cachedCleanSrc = null;
-    lastCleanState = { key:'', w:-1, h:-1 };
-    cachedLensSrc = null;
-    lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
-    lastRawParams = { w:-1, h:-1, seedId:0 };
-    lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
-    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
     self.postMessage({cmd:'inited'});
     const srcCopy = srcData.slice();
     const blurRCopy = blurredSrc.r.slice(), blurGCopy = blurredSrc.g.slice(), blurBCopy = blurredSrc.b.slice();
@@ -1162,6 +1215,8 @@ self.onmessage = async function(e){
     // Stage D (CCD Clean): runs first and replaces the source everything else
     // reads. Cached on its own three params, so dragging a grain slider never
     // re-runs it. Cheap no-op when all three are 0.
+    // Frame-relative -> pixels, once, here: everything downstream wants px.
+    const sizePx = grainSizePx(p.size, w, h);
     const cleanKey = (p.olpf||0) + '|' + (p.detail||0) + '|' + (p.chroma||0);
     let cleanRan = false;
     if (lastCleanState.key !== cleanKey || lastCleanState.w !== w || lastCleanState.h !== h){
@@ -1217,22 +1272,22 @@ self.onmessage = async function(e){
     // Stage A (heavy): blur the (possibly cached) raw noise. On size/clump change.
     const needsBlur = needsRaw ||
       lastBlurParams.w !== w || lastBlurParams.h !== h ||
-      lastBlurParams.size !== p.size ||
+      lastBlurParams.size !== sizePx ||
       lastBlurParams.clump !== p.clump;
 
     if (needsBlur) {
       console.log('render: Stage A blurring noise (r)...');
-      const rN = await grainBlur(cachedRawNoise.r, w, h, p.size);
+      const rN = await grainBlur(cachedRawNoise.r, w, h, sizePx);
       console.log('render: Stage A blurring noise (g)...');
-      const gN = await grainBlur(cachedRawNoise.g, w, h, p.size);
+      const gN = await grainBlur(cachedRawNoise.g, w, h, sizePx);
       console.log('render: Stage A blurring noise (b)...');
-      const bN = await grainBlur(cachedRawNoise.b, w, h, p.size);
+      const bN = await grainBlur(cachedRawNoise.b, w, h, sizePx);
       const monoN = new Float32Array(w*h);
       for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
       console.log('render: Stage A computing clump mask...');
       const maskN = (await makeClumpMask(w,h,p.clump)) || new Float32Array(w*h).fill(1);
       cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: maskN };
-      lastBlurParams = { size:p.size, clump:p.clump, w, h, seedId };
+      lastBlurParams = { size:sizePx, clump:p.clump, w, h, seedId };
       console.log('render: Stage A done');
     }
     const t2 = performance.now();
@@ -1447,9 +1502,9 @@ const presets = {
   hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
   portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
   heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 35, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
-  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 55, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
-  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 40, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
+  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 25, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
+  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 45, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
+  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 29, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
   // NB: no 'saved1' entry here. That slot is the user's localStorage save and
   // is resolved at selection time -- it used to be a hardcoded object, so
   // picking "Saved Custom 1" returned numbers that had nothing to do with what
@@ -1506,6 +1561,21 @@ renderWorker.onmessage = (e) => {
   if (msg.cmd === 'blurredSrcReady') {
     window.__debugLog && window.__debugLog('worker: blurredSrcReady received, uploading base GPU textures...');
     uploadGPUBaseTextures(msg.w, msg.h, new Uint8ClampedArray(msg.buffer), new Uint8ClampedArray(msg.blurR), new Uint8ClampedArray(msg.blurG), new Uint8ClampedArray(msg.blurB));
+    return;
+  }
+  if (msg.cmd === 'workerError') {
+    // Without this the dispatcher stays wedged: workerBusy is only cleared by a
+    // 'rendered' callback, so a throw inside the worker would leave the loader
+    // spinning and every later render queued behind it forever.
+    window.__debugLog && window.__debugLog('worker error: ' + msg.message, true);
+    workerBusy = false;
+    pendingReqs.clear();
+    loader.classList.remove('active');
+    if (pendingParams) {
+      const next = pendingParams;
+      pendingParams = null;
+      sendToWorker(next.p, next.forceHeavy);
+    }
     return;
   }
   if (msg.cmd !== 'rendered') return;
@@ -1808,7 +1878,11 @@ function readParams(){
 function updateReadout(){
   const p = readParams();
   vEls.intensity.textContent = p.intensity;
-  vEls.size.textContent = p.size.toFixed(1);
+  // Show the frame-relative value AND what it works out to on this image, so
+  // it is obvious the slider is not a pixel radius.
+  vEls.size.textContent = procW
+    ? p.size.toFixed(1) + ' (' + (p.size * Math.max(procW, procH) / 4000).toFixed(1) + 'px)'
+    : p.size.toFixed(1);
   vEls.clump.textContent = Math.round(p.clump*100);
   vEls.bias.textContent = p.bias.toFixed(2);
   vEls.lift.textContent = els.lift.value;
@@ -2177,7 +2251,10 @@ document.getElementById("reset").addEventListener("click", () => {
 // sitting at whatever the current session had -- which is why a load could look
 // nothing like what was saved. applyValues() now fills every missing key from
 // OFF, and the seed travels with the save so the grain pattern comes back too.
-const LS_KEY = "grainpro_custom_v2";
+// Mirrors CC_OLPF_EXP in the worker; used only to migrate old saves.
+const CC_OLPF_EXP_UI = 0.75;
+const LS_KEY = "grainpro_custom_v3";
+const LS_KEY_V2 = "grainpro_custom_v2";
 const LS_KEY_LEGACY = "grainpro_custom_v1";
 
 function readSaved(){
@@ -2187,7 +2264,19 @@ function readSaved(){
       const d = JSON.parse(raw);
       if (d && d.values) return d;
     }
-    // Migrate a v1 save: flat map of slider -> value, no seed.
+    // v2: same shape, but its olpf value was tuned against the old linear
+    // slider->sigma mapping. Convert so a restored save still looks the same:
+    // sigma was MAX*t, it is now MAX*t^EXP, so t_new = t_old^(1/EXP).
+    const v2 = localStorage.getItem(LS_KEY_V2);
+    if (v2){
+      const d = JSON.parse(v2);
+      if (d && d.values){
+        const o = Number(d.values.olpf);
+        if (o > 0) d.values.olpf = Math.round(100 * Math.pow(o/100, 1/CC_OLPF_EXP_UI));
+        return d;
+      }
+    }
+    // Migrate a v1 save: flat map of slider -> value, no seed, no olpf at all.
     const legacy = localStorage.getItem(LS_KEY_LEGACY);
     if (legacy){
       const d = JSON.parse(legacy);
@@ -2205,7 +2294,7 @@ document.getElementById("save-local").addEventListener("click", () => {
   try {
     const values = {};
     for (const k of SLIDER_KEYS) values[k] = els[k].value;
-    const payload = { v:2, values, seedId: currentSeedId, at: Date.now() };
+    const payload = { v:3, values, seedId: currentSeedId, at: Date.now() };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
     // Verify it actually persisted (some browsers accept the call but silently
     // don't store anything, e.g. private browsing / file:// origin quirks).
