@@ -1,4 +1,41 @@
 <!doctype html>
+<!--
+  grain// pro v4.0 -- changelog
+
+  v4.0
+  - Grain: every control now moves ONE thing. Measured on v3: Size 0.5->5 cut
+    grain amplitude 5.4x, Color Independence 0 cut it to 58%, and a smaller
+    photo got ~37% more grain at the same settings. Fields are normalised after
+    the blur and the channel mix analytically: Intensity alone sets strength,
+    Size only texture, Color only colour.
+  - Grain is seeded (mulberry32): preview == export (v3 regenerated the noise
+    with Math.random at export, so the saved JPEG had a different pattern than
+    the one on screen) and a saved seed restores the exact grain.
+  - Grain no longer lifts blacks: symmetric taper near 0/255 instead of a
+    half-clipped noise (~+2 levels on pure black before).
+  - Softness is its own slider. v3 blended toward a fixed-2px blur by up to 22%,
+    tied invisibly to Intensity. Now user-controlled, frame-relative radius.
+  - New: Halation (Lens group) -- red-orange glow around highlights from light
+    bouncing off the film base into the red layer.
+  - Preview: worker area-averages to display size (exact look of the export at
+    that size, no grain aliasing from the browser's downscale), ~6x smaller
+    transfer per slider move. Memory: grain caches 47 -> 6 B/px (~560MB ->
+    ~72MB at 12MP). Box blur ~2x faster (row-major vertical pass). No blur at
+    image load any more.
+  - Progress % in the loader; progress lines no longer rewrite the persistent
+    log in localStorage on every chunk.
+  - UX: hold "A/B" to see the original instantly; tap a value badge to turn that
+    slider off; touching a slider switches the preset menu to Custom.
+  - Export: EXIF kept (date, camera, GPS...) with Orientation reset and colour
+    space set to sRGB, file saved as <name>_grain.jpg.
+  - Presets and the v3 local save are converted so they keep their look.
+  - Dead GPU preview path removed (disabled since v3.x).
+
+  v3.30
+  - Vignette as pure exposure falloff in linear light (was desaturating the
+    whole frame); Stage C softening no longer mixes the untouched original
+    back in; no GPU texture copies at init.
+-->
 <html lang="it">
 <head>
 <meta charset="utf-8">
@@ -120,6 +157,7 @@
     color:var(--bg); background: var(--safelight); padding: 1px 4px; font-weight: bold;
     font-variant-numeric:tabular-nums; border-radius: 2px; transition: transform 0.1s;
   }
+  .row .label .val{ cursor:pointer; }
   .row.active .label .val { transform: scale(1.1) translateY(-1px); box-shadow: 0 2px 6px rgba(201,67,46,0.4); }
 
   /* Compact Sliders */
@@ -198,7 +236,7 @@
       function log(msg, isError){
         lines.push('[' + new Date().toISOString().slice(11,19) + '] ' + msg);
         if (lines.length > 300) lines.splice(0, lines.length - 300); // cap growth
-        render();
+        if (box.style.display === 'block') render(); // v4: no full-log DOM rewrite while hidden
         persist(); // write-through on every single line: if the tab dies with
                    // zero warning (OS memory kill), whatever was logged up to
                    // that exact instant is already saved to disk, not just
@@ -282,9 +320,10 @@
   </script>
 
 <header>
-  <div class="logo">grain<span>//</span> pro <span class="version-tag">v3.29</span></div>
+  <div class="logo">grain<span>//</span> pro <span class="version-tag">v4.0</span></div>
   <div class="header-actions">
     <label for="file-input" class="pixel-btn">Load Image</label>
+    <button class="pixel-btn" id="btn-compare" title="Tieni premuto per vedere l'originale" style="touch-action:none; -webkit-user-select:none; user-select:none;">A/B</button>
     <button class="pixel-btn icon" id="btn-split" title="Toggle Split Screen (Before/After)">◐</button>
     <button class="pixel-btn icon" id="open-help" title="Help">?</button>
   </div>
@@ -296,8 +335,7 @@
     <div class="empty" id="empty-state">drag an image here</div>
     <div class="canvas-container" id="canvas-container">
       <canvas id="canvas" style="display:none"></canvas>
-      <canvas id="gpu-canvas" style="display:none; position:absolute; inset:0; margin:auto; pointer-events:none;"></canvas>
-    </div>
+          </div>
     <div class="zoom-controls">
       <button class="pixel-btn icon" id="zoom-out" title="Zoom Out">-</button>
       <button class="pixel-btn" id="zoom-fit" style="font-size:9px; padding:0 6px;" title="Fit">Fit</button>
@@ -319,6 +357,7 @@
         <option value="ccdclean">CCD Clean (Declutter)</option>
         <option value="cybershot">Cybershot (Strong Declutter)</option>
         <option value="compatta">Compatta Vintage (Clean + Lens)</option>
+        <option value="cine800t">Cinema (Halation)</option>
         <option value="saved1">Saved Custom 1</option>
       </select>
       <div class="tools-row">
@@ -360,6 +399,10 @@
         <div class="label"><span>Falloff</span><span class="val" id="v-falloff">40</span></div>
         <input type="range" id="falloff" min="0" max="100" value="40">
       </div>
+      <div class="row">
+        <div class="label"><span>Halation</span><span class="val" id="v-halation">0</span></div>
+        <input type="range" id="halation" min="0" max="100" value="0">
+      </div>
     </div>
 
     <div class="group">
@@ -375,6 +418,10 @@
       <div class="row">
         <div class="label"><span>Clumping</span><span class="val" id="v-clump">55</span></div>
         <input type="range" id="clump" min="0" max="100" value="55">
+      </div>
+      <div class="row">
+        <div class="label"><span>Morbidezza</span><span class="val" id="v-softness">12</span></div>
+        <input type="range" id="softness" min="0" max="100" value="12">
       </div>
     </div>
 
@@ -413,13 +460,16 @@
     <p>Simulazione fisica della pellicola, eseguita 100% in locale.</p>
     <ul>
       <li><strong>Zoom & Pan:</strong> Zoom fluido sulla foto tramite i pulsanti o la rotellina del mouse. Trascina l'immagine per spostarti senza alterare l'interfaccia.</li>
-      <li><strong>Download JPG:</strong> Esportazione a qualità massima (100%) alla risoluzione nativa originaria dell'immagine caricata.</li>
-      <li><strong>Intensity:</strong> Quantità totale di grana. Rendering istantaneo (Cache attiva).</li>
-      <li><strong>Size (ISO Proxy):</strong> Dimensione spaziale. Ricalcola il blur.</li>
-      <li><strong>Clumping:</strong> Aggregazione chimica realistica. Ricalcola il blur.</li>
-      <li><strong>Shadow Bias:</strong> Concentrazione della grana nelle ombre.</li>
+      <li><strong>A/B:</strong> tieni premuto per vedere l'originale, istantaneo. ◐ resta per lo split affiancato.</li>
+      <li><strong>Tap sul valore</strong> (il badge rosso) di uno slider: lo porta a zero, cioè effetto spento.</li>
+      <li><strong>Download JPG:</strong> jpegli a qualità massima, risoluzione piena. Conserva i dati EXIF dell'originale (data, fotocamera, GPS), con orientamento e spazio colore corretti. Il file si chiama <em>nome_grain.jpg</em>. La grana esportata e' <em>esattamente</em> quella che vedi: il seme e' deterministico.</li>
+      <li><strong>Intensity:</strong> l'unico controllo della <em>quantita'</em> di grana. Dalla v4 Size, Color Independence e la risoluzione della foto non la cambiano piu'.</li>
+      <li><strong>Size (ISO Proxy):</strong> solo la dimensione/tessitura del granulo.</li>
+      <li><strong>Clumping:</strong> aggregazione a bassa frequenza dei granuli.</li>
+      <li><strong>Morbidezza:</strong> la resa meno incisa della pellicola (emulsione + ingranditore). Prima era applicata di nascosto e legata a Intensity; ora e' tua. Raggio relativo al fotogramma.</li>
+      <li><strong>Shadow Bias:</strong> dove cade la grana: valori bassi la concentrano nelle ombre, 1.00 e' neutro.</li>
       <li><strong>Shadow Lift:</strong> Toe filmico: solleva il pavimento del nero comprimendo le ombre. Mezzitoni e alte luci non toccati.</li>
-      <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti.</li>
+      <li><strong>Color Indep.:</strong> 0 = grana B/N. 100 = 3 strati RGB indipendenti. Cambia solo il colore della grana, non la quantita'.</li>
     </ul>
     <p><strong>Dimensione della grana:</strong> il valore dello slider e' <em>relativo al fotogramma</em>, non un raggio in pixel. Un cristallo di alogenuro d'argento ha dimensione fissa sul negativo, quindi la stessa pellicola da' la stessa grana a qualunque ingrandimento. Prima era un raggio in pixel, e la stessa impostazione produceva grana fisicamente diversa su un ritaglio da 1MP e su un originale da 12MP: i preset non erano trasferibili tra immagini. Il numero tra parentesi accanto allo slider mostra a quanti pixel corrisponde sull'immagine caricata.</p>
     <h2 style="margin-top:22px">CCD Clean</h2>
@@ -434,7 +484,8 @@
     <p>Difetti ottici, applicati <em>dopo</em> CCD Clean e <em>prima</em> della grana: l'ordine e' fisico, l'obiettivo viene prima dell'emulsione. Applicarli dopo sposterebbe e scurirebbe i granuli stessi, cosa che sulla pellicola vera non succede.</p>
     <ul>
       <li><strong>Aberrazione Crom.:</strong> aberrazione laterale. R e B vengono spostati radialmente attorno all'asse ottico, G resta fermo come riferimento. La distribuzione segue la <em>stessa curva di copertura della vignettatura</em>, governata dallo slider Falloff: i due effetti sono sempre d'accordo su dove sia il "bordo" del fotogramma. Lo stesso slider porta con se' anche una <em>sbavatura radiale</em> che cresce col raggio: un obiettivo non si limita a separare le lunghezze d'onda, non riesce anche a metterle a fuoco, e i due difetti crescono nella stessa direzione. Per questo la sbavatura non e' applicata dopo la separazione ma dentro: ogni canale viene campionato su piu' punti disposti lungo il proprio spostamento radiale, cosi' i due difetti nascono da un'unica operazione come nascono da un'unica lente. Il blu si sposta 1.35x il rosso perche' le lunghezze d'onda corte disperdono di piu': e' per questo che sulle ottiche vere la frangia ciano e' sempre piu' marcata di quella rossa. L'asse e' volutamente decentrato e lo spostamento leggermente anisotropo &mdash; una CA perfettamente centrata e circolare e' la cosa che tradisce subito il filtro digitale.</li>
-      <li><strong>Vignettatura:</strong> non e' una moltiplicazione della luminanza in spazio gamma (il modello Lightroom, ed e' il motivo per cui quelle vignette sembrano digitali: gli angoli si chiudono verso il nero e diventano fangosi). Su pellicola meno luce agli angoli significa finire nel <em>toe</em> della curva caratteristica, dove lo stock e' meno contrastato: gli angoli si <em>slattano</em> invece di chiudersi, desaturano e virano caldo, perche' i tre strati hanno il toe sfalsato e su quasi tutte le C41 quello ciano sta piu' in basso. Quindi, in luce lineare: moltiplicazione per la caduta, <em>aggiunta</em> di un termine di velo che alza i neri negli angoli, desaturazione, deriva calda.</li>
+      <li><strong>Vignettatura:</strong> una caduta di <em>esposizione</em> verso gli angoli, come fa un obiettivo vero: in luce lineare, quindi i colori restano gli stessi e scendono solo di luminosita' (non e' la moltiplicazione in spazio gamma di Lightroom, che rende gli angoli fangosi). Due ritocchi da ottica d'epoca: una leggera compensazione di saturazione, perche' una zona piu' scura dello stesso colore all'occhio sembra piu' spenta, e una lieve deriva calda da vetro e collanti ingialliti. Angoli piu' scuri e ancora colorati, centro intatto. Se vuoi anche il velo lattiginoso nei neri, quello e' il lavoro di <strong>Lift</strong>.</li>
+      <li><strong>Halation:</strong> la luce molto forte attraversa l'emulsione, rimbalza sulla base della pellicola e torna indietro dallo strato posteriore, quello sensibile al rosso: un alone rosso-arancio attorno alle alte luci (lampioni, riflessi, nuvole controluce). Tocca solo cio' che e' davvero luminoso.</li>
       <li><strong>Falloff:</strong> la curva di copertura condivisa da aberrazione e vignettatura &mdash; decide <em>quanta parte</em> del fotogramma toccano, non quanto sono forti. A <strong>0</strong> e' la caduta ottica cos&sup4; reale: parte subito dal centro e arriva ben dentro l'immagine, quindi l'aberrazione si vede anche sul soggetto centrale. A <strong>100</strong> e' un taglio meccanico: piatto al centro, poi crollo rapido al bordo, come fa un paraluce. Con soggetti centrali tienilo basso, altrimenti l'aberrazione non ha niente da toccare.</li>
     </ul>
   </div>
@@ -766,10 +817,7 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
     const y1 = Math.min(h, y0 + CC_BAND_ROWS);
     ccBand(src, out, w, Math.max(0, y0-pad), Math.min(h, y1+pad), y0, y1, P, buf);
     done++;
-    if (y1 < h){
-      console.log('Stage D progress: ' + Math.round(done/nBands*100) + '%');
-      await new Promise(r => setTimeout(r, 0));
-    }
+    if (y1 < h){ progress('Clean', done/nBands); await yieldNow(); }
   }
   return out;
 }
@@ -802,14 +850,20 @@ async function ccdClean(src, w, h, olpf, detail, chroma){
    is slightly anisotropic; perfectly circular, perfectly centred CA is the one
    thing that instantly reads as a plugin rather than as glass.
 
-   Vignetting is NOT a gamma-space luminance multiply. That is the Lightroom
-   model and it is why LR vignettes look digital: corners crush toward black
-   and go muddy. On film, less corner light puts those pixels in the TOE of the
-   characteristic curve, where the stock is less contrasty -- so corners go
-   MILKY rather than black, they desaturate, and (because the three emulsion
-   layers have staggered toes, the cyan layer lowest on most C41 stock) they
-   drift warm. Hence, in LINEAR light: multiply by the falloff, ADD a fog term
-   that lifts the corner blacks, desaturate, shift warm.
+   Vignetting is an EXPOSURE falloff: the lens delivers less light to the
+   corners, nothing more. So it is a multiply in LINEAR light, which keeps
+   every pixel's chromaticity exactly where it was -- unlike a gamma-space
+   multiply (the Lightroom model), which shifts hue ratios and goes muddy.
+   v3.30: the previous model also desaturated toward luma and added a neutral
+   fog, on the theory of the negative's toe. Measured on a real photo, that
+   pulled chroma down ~2x faster than luminance, and because the cos^4 curve
+   reaches well into the frame, even low settings greyed the WHOLE picture.
+   The toe belongs to the Lift slider, not to the lens. Now: exposure falloff,
+   a small chroma compensation (a darker patch of the same colour reads LESS
+   colourful to the eye -- Hunt effect -- and on reversal stock the denser
+   corners actually carry richer dye), and a light warm drift from old glass
+   and its yellowed cement. Result: darker, still-coloured, slightly warm
+   corners -- the vintage-lens look -- with the centre untouched.
    ========================================================================== */
 const LN_CA_MAX     = 0.0180; // corner displacement as a fraction of corner radius
 /* Radial smear, carried by the same slider. A lens does not merely separate
@@ -828,13 +882,9 @@ const LN_CA_ANISO_Y = 1.06;   // real elements are never perfectly symmetric
 const LN_VIG_MAX    = 0.72;   // corner loses up to 72% of linear light (~1.8 stops)
 const LN_VIG_T      = 0.90;   // field-width term in the cos^4 falloff
 const LN_VIG_KNEE   = 0.55;   // where mechanical cutoff starts, fraction of radius
-const LN_VIG_FOG    = 0.006;  // linear-light fog at full falloff -- the toe lift.
-// Calibrated so a pure-black corner lands near sRGB 14 at max vignette: milky,
-// which is the point, but not the grey haze a larger value gives. At 0.030 the
-// lift cancelled most of the darkening on corners that were already dark.
-const LN_VIG_DESAT  = 0.45;   // chroma pulled toward luma at full falloff
-const LN_VIG_WARM_R = 0.10;   // linear-light gain on R at full falloff
-const LN_VIG_WARM_B = 0.06;   // linear-light cut on B at full falloff
+const LN_VIG_SAT    = 0.22;   // chroma gain per unit of light lost (Hunt compensation)
+const LN_VIG_WARM_R = 0.06;   // linear-light gain on R per unit of light lost
+const LN_VIG_WARM_B = 0.08;   // linear-light cut on B per unit of light lost
 const LN_LUT_N      = 2048;
 const LN_ROWS_CHUNK = 256;
 
@@ -930,15 +980,15 @@ function lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov,
         }
       } else { R = src[i]; G = src[i+1]; B = src[i+2]; }
 
-      if (depth > 0){
-        const t = depth*g, v = 1-t;
+      if (depth > 0 && g > 0){
+        const t = depth*g, v = 1-t;                  // t = fraction of light lost
         let lr = lnDecode(R)*v, lg = lnDecode(G)*v, lb = lnDecode(B)*v;
-        const fog = LN_VIG_FOG*t;                    // toe lift: milky, not crushed
-        lr += fog; lg += fog; lb += fog;
+        // Chroma compensation around linear luma: luma is unchanged, so this
+        // only restores the colourfulness the darkening takes away perceptually.
         const luma = 0.2126*lr + 0.7152*lg + 0.0722*lb;
-        const ds = LN_VIG_DESAT*t;                   // toe desaturation
-        lr += (luma-lr)*ds; lg += (luma-lg)*ds; lb += (luma-lb)*ds;
-        lr *= 1 + LN_VIG_WARM_R*t;                   // staggered layer toes
+        const k = 1 + LN_VIG_SAT*t;
+        lr = luma + (lr-luma)*k; lg = luma + (lg-luma)*k; lb = luma + (lb-luma)*k;
+        lr *= 1 + LN_VIG_WARM_R*t;                   // old glass: slight warm drift
         lb *= 1 - LN_VIG_WARM_B*t;
         out[i]   = lnRound8(lnEncode(lr));
         out[i+1] = lnRound8(lnEncode(lg));
@@ -951,8 +1001,8 @@ function lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov,
   }
 }
 
-async function lensStage(src, w, h, amount, vig, falloff){
-  if (!(amount > 0 || vig > 0)) return null;   // caller keeps the input as-is
+async function lensStage(src, w, h, amount, vig, falloff, hal){
+  if (!(amount > 0 || vig > 0 || hal > 0)) return null;   // caller keeps the input as-is
   const out = new Uint8ClampedArray(w*h*4);
   const minWH = Math.min(w,h);
   const cx = w/2 + LN_CA_CX*minWH, cy = h/2 + LN_CA_CY*minWH;
@@ -969,72 +1019,118 @@ async function lensStage(src, w, h, amount, vig, falloff){
   for (let yStart=0; yStart<h; yStart+=LN_ROWS_CHUNK){
     const yEnd = Math.min(h, yStart+LN_ROWS_CHUNK);
     lnChunk(src, out, w, yStart, yEnd, cx, cy, rMax, cov, dMaxR, dMaxB, blurMax, depth, w-1, h-1);
-    if (yEnd < h){
-      console.log('Stage E progress: ' + Math.round(yEnd/h*100) + '%');
-      await new Promise(r => setTimeout(r, 0));
-    }
+    if (yEnd < h){ progress('Lens', yEnd/h); await yieldNow(); }
   }
+  if (hal > 0){ progress('Halation', 0); await lnHalation(out, w, h, hal); }
   return out;
 }
 
-/* ---------- Noise Math (identical to prior single-thread version) ---------- */
-let bmCache = null;
-function gaussian(){
-  if (bmCache !== null){ const v = bmCache; bmCache = null; return v; }
-  let u=0,v=0;
-  while(u===0) u = Math.random(); while(v===0) v = Math.random();
-  const mag = Math.sqrt(-2.0*Math.log(u));
-  bmCache = mag*Math.sin(2.0*Math.PI*v);
-  return mag*Math.cos(2.0*Math.PI*v);
-}
-let scratchRaw = null, scratchRawSize = -1;
-function makeNoiseField(w,h){
-  const n = w*h;
-  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
-  for (let i=0;i<n;i++) scratchRaw[i] = gaussian();
-  return scratchRaw; // caller must consume (copy) before generating the next field
-}
-// Chunked variant: same output as makeNoiseField, but yields control back to
-// the event loop periodically instead of running as one giant synchronous
-// block. On a large image this loop can run for several seconds straight;
-// this guards against any responsiveness-based watchdog on top of the
-// memory-based safety cap.
-const NOISE_CHUNK = 400000;
-async function makeNoiseFieldChunked(w,h,label){
-  const n = w*h;
-  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
-  for (let start=0; start<n; start+=NOISE_CHUNK){
-    const end = Math.min(n, start+NOISE_CHUNK);
-    for (let i=start;i<end;i++) scratchRaw[i] = gaussian();
-    if (end < n) {
-      if (label) console.log('noise-gen progress: ' + label + ' ' + Math.round(end/n*100) + '%');
-      await new Promise(r => setTimeout(r, 0));
+/* Halation. Bright light crosses the emulsion, reflects off the film base and
+   comes back through the REAR layer -- the red-sensitive one -- exposing it a
+   second time in a halo around the highlight. Hence a red-orange glow, only
+   around things bright enough to punch through, wider than any lens blur.
+   Built on a 1/4-scale energy map (cost is negligible at any resolution) in
+   linear light, then added back with a bilinear upsample. */
+const HAL_T     = 0.45;   // linear-light threshold (~sRGB 178): only real highlights glow
+const HAL_SIGMA = 0.007;  // halo sigma, fraction of the long edge
+const HAL_GAIN  = 1.1;    // linear light added at slider 100, full energy
+const HAL_R = 1.0, HAL_G = 0.28, HAL_B = 0.05; // red layer first, a little into green
+async function lnHalation(img, w, h, amt){
+  const f = 4, sw = Math.ceil(w/f), sh = Math.ceil(h/f);
+  const m = new Float32Array(sw*sh), cnt = new Float32Array(sw*sh);
+  for (let y=0;y<h;y++){
+    const srow = (y/f|0)*sw;
+    for (let x=0, i=y*w*4; x<w; x++, i+=4){
+      const l = 0.2126*LN_S2L[img[i]] + 0.7152*LN_S2L[img[i+1]] + 0.0722*LN_S2L[img[i+2]];
+      const k = srow + (x/f|0);
+      if (l > HAL_T){ const e = (l-HAL_T)/(1-HAL_T); m[k] += e*e; }
+      cnt[k]++;
     }
   }
-  return scratchRaw;
+  for (let k=0;k<m.length;k++) m[k] /= cnt[k];
+  await boxBlur(m, sw, sh, boxRadiusFor(HAL_SIGMA*Math.max(w,h)/f), true, true);
+  const gain = amt*HAL_GAIN;
+  for (let y=0;y<h;y++){
+    const fy = Math.min(sh-1, Math.max(0, (y+0.5)/f - 0.5)), y0 = fy|0, y1 = Math.min(sh-1, y0+1), ty = fy-y0;
+    for (let x=0, i=y*w*4; x<w; x++, i+=4){
+      const fx = Math.min(sw-1, Math.max(0, (x+0.5)/f - 0.5)), x0 = fx|0, x1 = Math.min(sw-1, x0+1), tx = fx-x0;
+      const a = m[y0*sw+x0] + (m[y0*sw+x1]-m[y0*sw+x0])*tx;
+      const b = m[y1*sw+x0] + (m[y1*sw+x1]-m[y1*sw+x0])*tx;
+      const g = (a + (b-a)*ty)*gain;
+      if (g < 1e-5) continue;
+      img[i]   = lnRound8(lnEncode(LN_S2L[img[i]]   + g*HAL_R));
+      img[i+1] = lnRound8(lnEncode(LN_S2L[img[i+1]] + g*HAL_G));
+      img[i+2] = lnRound8(lnEncode(LN_S2L[img[i+2]] + g*HAL_B));
+    }
+    if ((y & 255) === 255) await yieldNow();
+  }
 }
-let scratchClumpRaw = null, scratchClumpRawSize = -1;
-function makeClumpNoiseField(w,h){
-  const n = w*h;
-  if (scratchClumpRawSize !== n) { scratchClumpRaw = new Float32Array(n); scratchClumpRawSize = n; }
-  for (let i=0;i<n;i++) scratchClumpRaw[i] = gaussian();
-  return scratchClumpRaw;
+
+
+/* ============================================================================
+   Grain engine (v4.0)
+
+   What changed vs v3, and why -- all measured, see the changelog in the header:
+   - Every control now moves ONE thing. v3's grain amplitude fell 5.4x across
+     the Size range (3-pass box blur of white noise loses variance ~1/sigma and
+     the sqrt(1+r) "restore" factor only gave back part of it), fell to 58% at
+     Color Independence 0 (the mono field was a plain average of three
+     independent fields: std 1/sqrt(3)), and changed with image resolution
+     (the same frame-relative Size is fewer pixels on a smaller photo, so less
+     blur, so more amplitude). Fields are now normalised to std 1 after the
+     blur and the channel mix is normalised analytically, so Intensity is the
+     only thing that sets how strong the grain is.
+   - Seeded PRNG (mulberry32). v3 used Math.random and the export path forced a
+     regeneration, so the exported grain was a DIFFERENT pattern from the one
+     on screen, and a saved seed restored nothing. Now seed -> same grain,
+     preview == export, always.
+   - Memory. v3 kept raw noise (3 planes), blurred fields (3), mono, mask, the
+     Stage B delta (3) and a blurred source (3 x u8): ~47 B/px, ~560MB at 12MP.
+     v4 keeps three Int16 fields with the clump mask baked in: 6 B/px, ~72MB.
+     The mono mix and shadow weight are two multiplies per pixel in Stage C,
+     cheaper than the memory they used to cost.
+   ========================================================================== */
+const yieldNow = () => new Promise(r => setTimeout(r, 0));
+function progress(label, frac){
+  self.postMessage({ cmd:'progress', label, pct: Math.round(frac*100) });
 }
+
+const GQ = 2048;                 // Int16 quantisation: field std 1 -> 2048 (headroom +-16 sigma)
+const GRAIN_K = 0.155;           // calibration: Intensity 30 at Size 1.4 / Color 60 == v3's 35mm preset
+const NOISE_INV_STD = 1/Math.sqrt(4*(65536-1)/12); // sum of 4 uniform bytes -> std 1
+const NOISE_CHUNK = 400000;
+
+function seedFor(seed, ch){
+  let h = Math.imul((seed|0) ^ 0x9E3779B9, 0x85EBCA6B) ^ Math.imul(ch+1, 0xC2B2AE35);
+  h ^= h >>> 16; h = Math.imul(h, 0x27D4EB2F); h ^= h >>> 15;
+  return h | 0;
+}
+// Near-gaussian noise: sum of the four bytes of one mulberry32 draw (Irwin-Hall,
+// n=4). One PRNG call per pixel instead of Box-Muller's log/sqrt/sin/cos; after
+// the grain blur the shape is gaussian regardless (central limit).
+async function fillNoise(buf, n, seed){
+  let s = seed | 0;
+  for (let start=0; start<n; start+=NOISE_CHUNK){
+    const end = Math.min(n, start+NOISE_CHUNK);
+    for (let i=start; i<end; i++){
+      s = (s + 0x6D2B79F5) | 0;
+      let t = Math.imul(s ^ (s >>> 15), 1 | s);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      t ^= t >>> 14;
+      buf[i] = ((t & 255) + ((t >>> 8) & 255) + ((t >>> 16) & 255) + ((t >>> 24) & 255) - 510) * NOISE_INV_STD;
+    }
+    if (end < n) await yieldNow();
+  }
+}
+
+let scratchRaw = null, scratchRawSize = -1;
 let scratchB = null, scratchBSize = -1;
 let scratchClumpB = null, scratchClumpBSize = -1;
-async function grainBlur(src,w,h,radius){
-  if (radius<=0) return src.slice();
-  const r0 = Math.floor(radius), frac = radius-r0;
-  const lo = r0<1 ? src.slice() : await boxBlur(src,w,h,r0);
-  const hi = frac>0.05 ? await boxBlur(src,w,h,r0+1) : lo;
-  const factor = Math.sqrt(1+radius) * 0.85; // restore contrast lost to averaging at high radius
-  const out = new Float32Array(w*h);
-  for (let i=0;i<out.length;i++) out[i] = (lo[i] + (hi[i]-lo[i])*frac) * factor;
-  return out;
-}
-async function boxBlur(src,w,h,radius,useClumpPool){
-  if (radius < 0.5) return src.slice();
-  let a = src.slice();
+let colAcc = null;
+// 3-pass box blur (~gaussian, sigma^2 = r(r+1)). inPlace overwrites src.
+async function boxBlur(src,w,h,radius,useClumpPool,inPlace){
+  if (radius < 0.5) return inPlace ? src : src.slice();
+  let a = inPlace ? src : src.slice();
   const n = w*h;
   let b;
   if (useClumpPool){
@@ -1045,81 +1141,234 @@ async function boxBlur(src,w,h,radius,useClumpPool){
     b = scratchB;
   }
   const r = Math.max(1, Math.round(radius));
+  const inv = 1/(2*r+1);
   for (let pass=0; pass<3; pass++){
     for (let y=0;y<h;y++){
       let acc=0; const row=y*w;
       for (let x=-r;x<=r;x++) acc += a[row + (x<0?0:(x>=w?w-1:x))];
       for (let x=0;x<w;x++){
-        b[row+x] = acc/(2*r+1);
-        acc -= a[row + (x-r<0?0:(x-r>=w?w-1:x-r))];
-        acc += a[row + (x+r+1<0?0:(x+r+1>=w?w-1:x+r+1))];
+        b[row+x] = acc*inv;
+        acc -= a[row + (x-r<0?0:x-r)];
+        acc += a[row + (x+r+1>=w?w-1:x+r+1)];
       }
     }
-    for (let x=0;x<w;x++){
-      let acc=0;
-      for (let y=-r;y<=r;y++) acc += b[(y<0?0:(y>=h?h-1:y))*w+x];
-      for (let y=0;y<h;y++){
-        a[y*w+x] = acc/(2*r+1);
-        acc -= b[(y-r<0?0:(y-r>=h?h-1:y-r))*w+x];
-        acc += b[(y+r+1<0?0:(y+r+1>=h?h-1:y+r+1))*w+x];
+    // Vertical pass swept ROW-major with one running sum per column: the
+    // column-major version strided by w on every read and was ~3x slower.
+    if (!colAcc || colAcc.length < w) colAcc = new Float64Array(w);
+    colAcc.fill(0, 0, w);
+    for (let y=-r;y<=r;y++){ const row=(y<0?0:(y>=h?h-1:y))*w; for (let x=0;x<w;x++) colAcc[x] += b[row+x]; }
+    for (let y=0;y<h;y++){
+      const row=y*w, rOut=(y-r<0?0:y-r)*w, rIn=(y+r+1>=h?h-1:y+r+1)*w;
+      for (let x=0;x<w;x++){
+        const v = colAcc[x];
+        a[row+x] = v*inv;
+        colAcc[x] = v - b[rOut+x] + b[rIn+x];
       }
     }
-    if (pass < 2) await new Promise(res => setTimeout(res, 0)); // yield between passes on large images
+    if (pass < 2 && n > 250000) await yieldNow();
   }
   return a;
 }
-async function makeClumpMask(w,h,strength){
-  if (strength <= 0.001) return null;
+// Box radius whose 3-pass sigma (sqrt(r(r+1))) is closest to the target.
+function boxRadiusFor(sigma){ return Math.max(1, Math.round(Math.sqrt(0.25 + sigma*sigma) - 0.5)); }
+
+// Low-frequency clump modulation, 1/28 of the frame, seeded like the grain.
+async function makeClumpCoarse(w, h, seed){
   const cw = Math.max(2, Math.round(w/28)), ch = Math.max(2, Math.round(h/28));
-  let coarse = await boxBlur(makeClumpNoiseField(cw,ch), cw, ch, 1.2, true);
-  const mask = new Float32Array(w*h);
+  const c = new Float32Array(cw*ch);
+  await fillNoise(c, cw*ch, seedFor(seed, 7));
+  await boxBlur(c, cw, ch, 1.2, true, true);
+  return { c, cw, ch };
+}
+
+async function makeGrainField(w, h, sizePx, seed, chIdx, clump, strength, label){
+  const n = w*h;
+  if (scratchRawSize !== n) { scratchRaw = new Float32Array(n); scratchRawSize = n; }
+  const f = scratchRaw;
+  await fillNoise(f, n, seedFor(seed, chIdx));
+  progress(label, 0.25);
+  if (sizePx > 0.01){
+    const r0 = Math.floor(sizePx), frac = sizePx - r0;
+    let hi = null;
+    if (frac > 0.05) hi = await boxBlur(f, w, h, r0+1);     // copy
+    progress(label, 0.55);
+    if (r0 >= 1) await boxBlur(f, w, h, r0, false, true);  // in place
+    if (hi){ for (let i=0;i<n;i++) f[i] += (hi[i]-f[i])*frac; hi = null; }
+  }
+  progress(label, 0.85);
+  // Normalise to std 1: Size now changes the TEXTURE, never the amount.
+  let s=0, q=0, cnt=0;
+  for (let i=0;i<n;i+=7){ const v=f[i]; s+=v; q+=v*v; cnt++; }
+  const mean = s/cnt, sd = Math.sqrt(Math.max(1e-12, q/cnt - mean*mean));
+  const k = GQ/sd;
+  const out = new Int16Array(n);
+  const cc = clump ? clump.c : null, cw = clump ? clump.cw : 0, chh = clump ? clump.ch : 0;
+  const sAmt = strength*0.9;
   for (let y=0;y<h;y++){
-    const fy = (y/(h-1))*(ch-1);
-    const y0 = Math.floor(fy), y1 = Math.min(ch-1,y0+1), ty = fy-y0;
+    let y0=0, y1=0, ty=0;
+    if (cc){ const fy=(y/Math.max(1,h-1))*(chh-1); y0=fy|0; y1=Math.min(chh-1,y0+1); ty=fy-y0; }
+    const row=y*w;
     for (let x=0;x<w;x++){
-      const fx = (x/(w-1))*(cw-1);
-      const x0 = Math.floor(fx), x1 = Math.min(cw-1,x0+1), tx = fx-x0;
-      const top = coarse[y0*cw+x0] + (coarse[y0*cw+x1]-coarse[y0*cw+x0])*tx;
-      const bot = coarse[y1*cw+x0] + (coarse[y1*cw+x1]-coarse[y1*cw+x0])*tx;
-      mask[y*w+x] = Math.max(0.15, 1 + (top + (bot-top)*ty)*strength*0.9);
+      let m = 1;
+      if (cc){
+        const fx=(x/Math.max(1,w-1))*(cw-1), x0=fx|0, x1=Math.min(cw-1,x0+1), tx=fx-x0;
+        const top = cc[y0*cw+x0] + (cc[y0*cw+x1]-cc[y0*cw+x0])*tx;
+        const bot = cc[y1*cw+x0] + (cc[y1*cw+x1]-cc[y1*cw+x0])*tx;
+        m = 1 + (top + (bot-top)*ty)*sAmt; if (m < 0.15) m = 0.15;
+      }
+      let v = (f[row+x]-mean)*k*m;
+      v = v >= 0 ? v + 0.5 : v - 0.5;
+      out[row+x] = v > 32767 ? 32767 : (v < -32767 ? -32767 : v|0);
     }
   }
-  return mask;
+  return out;
 }
-function clamp8(v){ return v<0?0:(v>255?255:v|0); }
 
-const powLUT = new Float32Array(256);
+/* Shadow weight, indexed by R+G+B (0..765): (1-lum)^(1/bias). */
+const wLUT = new Float32Array(766);
 let lastBiasLUT = null;
-function updatePowLUT(bias){
+function updateWeightLUT(bias){
   if (bias === lastBiasLUT) return;
   const k = 1 / bias;
-  for (let i=0;i<256;i++) powLUT[i] = Math.pow(1 - i/255, k);
+  for (let i=0;i<766;i++) wLUT[i] = Math.pow(1 - i/765, k);
   lastBiasLUT = bias;
 }
 
-/* ---------- Worker State ---------- */
-let W=0, H=0, srcData=null, blurredSrc=null;
-let cachedRawNoise = null; // Stage A0: raw gaussian fields, independent of size/clump
-let lastRawParams = { w:-1, h:-1, seedId:0 };
-let cachedNoiseFields = null;
-let lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
-/* Grain size is specified RELATIVE TO THE FRAME, not in pixels.
+/* Softness (v4: its own slider). v3 blended toward a blurred copy by up to 22%
+   tied to Intensity, with a FIXED 2px box radius: invisible to the user, not
+   controllable, and a different amount of blur on every resolution. Now: blend
+   amount = Softness, radius frame-relative (sigma 2.45px at a 4000px long edge,
+   i.e. exactly v3's blur on a 12MP photo). Blur of whatever Stage D/E produced,
+   so it never mixes the untouched original back in. */
+const SOFT_SIGMA_REF = 2.45;
+async function blurPlanesOf(src, w, h, r){
+  const n = w*h, out = {};
+  for (const [k, off] of [['r',0],['g',1],['b',2]]){
+    const plane = new Float32Array(n);
+    for (let px=0, i=off; px<n; px++, i+=4) plane[px] = src[i];
+    await boxBlur(plane, w, h, r, false, true);
+    const u8 = new Uint8ClampedArray(n);
+    for (let px=0; px<n; px++) u8[px] = plane[px];   // ClampedArray rounds itself
+    out[k] = u8;
+  }
+  return out;
+}
 
-   A silver halide crystal has a fixed size on the negative, so the same stock
-   yields the same grain whatever you enlarge it to. The slider used to be a
-   pixel radius, which meant one setting produced physically different grain on
-   a 1MP crop and a 12MP original -- presets simply did not transfer between
-   images. The slider value is now the radius it would have at the reference
-   long edge below (4000px = the 12MP cap this app processes at), scaled to
-   whatever is actually loaded. */
+/* Stage C: softness + toe + grain, then either full-res RGBA (export) or an
+   area-averaged display-size preview. v3 shipped the full 12MP result (48MB)
+   to the main thread on every slider move and let drawImage shrink it with a
+   bilinear pick -- which aliases grain, so the preview showed harsher grain
+   than the export. The area average here is what the export actually looks
+   like at that size, and the message is ~6x smaller. */
+async function compose(src, blurB, blendAmt, p, F, w, h, split, pv){
+  const A = F ? p.intensity * 0.9 * GRAIN_K : 0;   // per-channel grain std, in 8-bit levels
+  const ampQ = A / GQ;
+  const c = p.chan, kM = (1-c)/Math.sqrt(3);
+  const norm = 1/Math.sqrt((c+kM)*(c+kM) + 2*kM*kM); // channel mix -> std 1 at any Color Independence
+  const cN = c*norm, kN = kM*norm;
+  updateWeightLUT(p.bias);
+  // Symmetric taper near the rails: v3 clipped the negative half of the grain
+  // at 0, which lifted pure black by ~2 levels on average.
+  const invT = 1/Math.max(6, 2.5*A);
+  const liftL = Math.max(0, p.lift || 0) * 255;
+  const invK  = liftL > 0 ? 0.30 / liftL : 0;
+  const halfW = Math.floor(w/2);
+  const Fr = F ? F.r : null, Fg = F ? F.g : null, Fb = F ? F.b : null;
+  const bR = blurB ? blurB.r : null, bG = blurB ? blurB.g : null, bB = blurB ? blurB.b : null;
+
+  let out, acc = null, xmap = null, dw = w, dh = h;
+  if (pv){
+    dw = pv.dw; dh = pv.dh;
+    acc = new Float32Array(dw*dh*3);
+    xmap = new Int32Array(w);
+    for (let x=0;x<w;x++) xmap[x] = Math.min(dw-1, (x*dw/w)|0);
+  } else {
+    out = new Uint8ClampedArray(w*h*4);
+  }
+  const bins = new Array(24).fill(0);
+  const histStep = Math.max(1, Math.floor((w*h)/20000));
+  const ROWS = 256;
+
+  for (let y=0; y<h; y++){
+    const dRow = pv ? Math.min(dh-1, (y*dh/h)|0)*dw : 0;
+    let px = y*w, i = px*4;
+    for (let x=0; x<w; x++, px++, i+=4){
+      let R, G, B;
+      if (split && x < halfW){
+        R = srcData[i]; G = srcData[i+1]; B = srcData[i+2];
+      } else {
+        R = src[i]; G = src[i+1]; B = src[i+2];
+        const wIdx = R + G + B;
+        if (blendAmt > 0){
+          R += (bR[px]-R)*blendAmt; G += (bG[px]-G)*blendAmt; B += (bB[px]-B)*blendAmt;
+        }
+        if (liftL > 0){
+          let d;
+          d = 1 - R*invK; if (d > 0) R += liftL*d*d;
+          d = 1 - G*invK; if (d > 0) G += liftL*d*d;
+          d = 1 - B*invK; if (d > 0) B += liftL*d*d;
+        }
+        const wg = wLUT[wIdx] * ampQ;
+        if (wg > 0){
+          const fr = Fr[px], fg = Fg[px], fb = Fb[px], S = (fr+fg+fb)*kN;
+          let t;
+          t = (R < 255-R ? R : 255-R)*invT; if (t > 1) t = 1; else if (t < 0) t = 0;
+          R += (fr*cN + S)*wg*t;
+          t = (G < 255-G ? G : 255-G)*invT; if (t > 1) t = 1; else if (t < 0) t = 0;
+          G += (fg*cN + S)*wg*t;
+          t = (B < 255-B ? B : 255-B)*invT; if (t > 1) t = 1; else if (t < 0) t = 0;
+          B += (fb*cN + S)*wg*t;
+        }
+      }
+      if (pv){
+        const o = (dRow + xmap[x])*3;
+        acc[o] += R; acc[o+1] += G; acc[o+2] += B;
+      } else {
+        out[i]   = R <= 0 ? 0 : (R >= 255 ? 255 : (R+0.5)|0);
+        out[i+1] = G <= 0 ? 0 : (G >= 255 ? 255 : (G+0.5)|0);
+        out[i+2] = B <= 0 ? 0 : (B >= 255 ? 255 : (B+0.5)|0);
+        out[i+3] = 255;
+      }
+      if (px % histStep === 0 && (!split || x >= halfW)){
+        const l = (R+G+B)/3;
+        const bin = l <= 0 ? 0 : Math.min(23, (l/256*24)|0);
+        bins[bin]++;
+      }
+    }
+    if ((y+1) % ROWS === 0 && y+1 < h){ progress('Grana', (y+1)/h); await yieldNow(); }
+  }
+
+  if (pv){
+    const cx = new Float32Array(dw), cy = new Float32Array(dh);
+    for (let x=0;x<w;x++) cx[xmap[x]]++;
+    for (let y=0;y<h;y++) cy[Math.min(dh-1,(y*dh/h)|0)]++;
+    out = new Uint8ClampedArray(dw*dh*4);
+    for (let y=0;y<dh;y++) for (let x=0;x<dw;x++){
+      const k = y*dw+x, inv = 1/(cx[x]*cy[y]), o = k*3, d = k*4;
+      out[d] = acc[o]*inv; out[d+1] = acc[o+1]*inv; out[d+2] = acc[o+2]*inv; out[d+3] = 255;  // ClampedArray rounds
+    }
+  }
+  if (split){
+    const col = Math.floor(dw/2);
+    for (let y=0;y<dh;y++){ const d=(y*dw+col)*4; out[d]=201; out[d+1]=67; out[d+2]=46; }
+  }
+  let maxCount = 1; for (const b of bins) if (b > maxCount) maxCount = b;
+  return { out, w: dw, h: dh, bins, maxCount };
+}
+
+/* ---------- Worker State ---------- */
+let W=0, H=0, srcData=null;
+/* Grain size is specified RELATIVE TO THE FRAME, not in pixels: the slider value
+   is the radius at a 4000px long edge (the 12MP cap), scaled to the image. */
 const GRAIN_REF_LONG_EDGE = 4000;
 function grainSizePx(size, w, h){ return size * (Math.max(w, h) / GRAIN_REF_LONG_EDGE); }
-let cachedGrainDelta = null; // Stage B output: weight*mask*mix, independent of intensity
-let lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
+let cachedFields = null, lastFieldKey = '';
 let cachedCleanSrc = null;   // Stage D output; null means "use srcData untouched"
 let lastCleanState = { key:'', w:-1, h:-1 };
 let cachedLensSrc = null;    // Stage E output; null means "use the Stage D result as-is"
 let lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
+let cachedBlurStaged = null, lastBlurStagedKey = '';
+
 
 // Forward all console.* calls from inside the worker (where jpegli runs) to
 // the main thread's persistent log, since a worker's own console output is
@@ -1171,257 +1420,113 @@ async function handleMessage(e){
     console.log('worker init: received ' + msg.w + 'x' + msg.h + ' (' + (msg.buffer.byteLength/1024/1024).toFixed(1) + 'MB buffer)');
     W = msg.w; H = msg.h;
     srcData = new Uint8ClampedArray(msg.buffer);
-    // Reset every piece of derived state SYNCHRONOUSLY, before the first await
-    // below, so the worker is never left holding a mix of the new source and
-    // the previous image's caches -- which are sized for the previous image.
-    blurredSrc = null;
-    cachedRawNoise = null;
-    cachedNoiseFields = null;
-    cachedGrainDelta = null;
+    // Reset every piece of derived state SYNCHRONOUSLY, so the worker is never
+    // left holding caches sized for the previous image. v4: no blur at init any
+    // more -- the Softness base is built lazily, only if Softness is > 0.
+    cachedFields = null; lastFieldKey = '';
     cachedCleanSrc = null;
     cachedLensSrc = null;
+    cachedBlurStaged = null; lastBlurStagedKey = '';
     lastCleanState = { key:'', w:-1, h:-1 };
     lastLensState = { key:'', srcKey:'', w:-1, h:-1 };
-    lastRawParams = { w:-1, h:-1, seedId:0 };
-    lastBlurParams = { size:-1, clump:-1, w:-1, h:-1, seedId:0 };
-    lastComposeParams = { bias:null, chan:-1, w:-1, h:-1, seedId:0, cleanKey:'' };
-    const n = W*H, rC=new Float32Array(n), gC=new Float32Array(n), bC=new Float32Array(n);
-    for (let i=0,px=0; px<n; px++, i+=4){ rC[px]=srcData[i]; gC[px]=srcData[i+1]; bC[px]=srcData[i+2]; }
-    console.log('worker init: planes split, starting initial softening blur (3x boxBlur passes)...');
-    blurredSrc = {
-      r: new Uint8ClampedArray(await boxBlur(rC,W,H,1.5)),
-      g: new Uint8ClampedArray(await boxBlur(gC,W,H,1.5)),
-      b: new Uint8ClampedArray(await boxBlur(bC,W,H,1.5))
-    };
-    console.log('worker init: softening blur done');
+    scratchRaw = null; scratchRawSize = -1; scratchB = null; scratchBSize = -1;
     self.postMessage({cmd:'inited'});
-    const srcCopy = srcData.slice();
-    const blurRCopy = blurredSrc.r.slice(), blurGCopy = blurredSrc.g.slice(), blurBCopy = blurredSrc.b.slice();
-    self.postMessage(
-      { cmd:'blurredSrcReady', w:W, h:H,
-        buffer: srcCopy.buffer, blurR: blurRCopy.buffer, blurG: blurGCopy.buffer, blurB: blurBCopy.buffer },
-      [srcCopy.buffer, blurRCopy.buffer, blurGCopy.buffer, blurBCopy.buffer]
-    );
     return;
   }
 
   if (msg.cmd === 'render') {
-    const reqId = msg.reqId, p = msg.params, forceHeavy = msg.forceHeavy,
-          seedId = msg.seedId, isSplitScreen = msg.isSplitScreen,
-          wantGpuData = msg.wantGpuData !== false; // default true for the live-preview path
+    const reqId = msg.reqId, p = msg.params, seedId = msg.seedId,
+          isSplitScreen = !!msg.isSplitScreen, pv = msg.preview || null;
     const w = W, h = H;
     const t0 = performance.now();
 
-    // Stage D (CCD Clean): runs first and replaces the source everything else
-    // reads. Cached on its own three params, so dragging a grain slider never
-    // re-runs it. Cheap no-op when all three are 0.
-    // Frame-relative -> pixels, once, here: everything downstream wants px.
-    const sizePx = grainSizePx(p.size, w, h);
+    // Stage D (CCD Clean). Cached on its own three params.
     const cleanKey = (p.olpf||0) + '|' + (p.detail||0) + '|' + (p.chroma||0);
     let cleanRan = false;
     if (lastCleanState.key !== cleanKey || lastCleanState.w !== w || lastCleanState.h !== h){
       cleanRan = cleanKey !== '0|0|0';
-      if (cleanKey === '0|0|0') {
-        cachedCleanSrc = null;
-      } else {
-        console.log('render: Stage D cleaning ' + w + 'x' + h + ' (' + cleanKey + ')...');
+      cachedCleanSrc = null;                 // drop the stale buffer BEFORE building the next
+      if (cleanRan) {
+        console.log('render: Stage D ' + w + 'x' + h + ' (' + cleanKey + ')');
         cachedCleanSrc = await ccdClean(srcData, w, h, p.olpf||0, p.detail||0, p.chroma||0);
-        console.log('render: Stage D done');
       }
       lastCleanState = { key: cleanKey, w, h };
     }
     const cleanedSrc = cachedCleanSrc || srcData;
     const tD = performance.now();
 
-    // Stage E (Lens): CA + vignette, on top of the Stage D result. Chained
-    // cache -- it re-runs when its own params change OR when the thing beneath
-    // it changed, so lastLensState tracks the Stage D key as well.
-    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0);
+    // Stage E (Lens: CA + vignette + halation). Chained on Stage D's key.
+    const lensKey = (p.ca||0) + '|' + (p.vignette||0) + '|' + (p.falloff||0) + '|' + (p.halation||0);
+    const lensOn = (p.ca||0) > 0 || (p.vignette||0) > 0 || (p.halation||0) > 0;
     let lensRan = false;
     if (lastLensState.key !== lensKey || lastLensState.srcKey !== cleanKey ||
         lastLensState.w !== w || lastLensState.h !== h){
-      lensRan = (p.ca||0) > 0 || (p.vignette||0) > 0;
-      if ((p.ca||0) === 0 && (p.vignette||0) === 0) {
-        cachedLensSrc = null;
-      } else {
-        console.log('render: Stage E lens ' + w + 'x' + h + ' (' + lensKey + ')...');
-        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0);
-        console.log('render: Stage E done');
+      lensRan = lensOn;
+      cachedLensSrc = null;
+      if (lensOn) {
+        console.log('render: Stage E ' + w + 'x' + h + ' (' + lensKey + ')');
+        cachedLensSrc = await lensStage(cleanedSrc, w, h, p.ca||0, p.vignette||0, p.falloff||0, p.halation||0);
       }
       lastLensState = { key: lensKey, srcKey: cleanKey, w, h };
     }
     const src = cachedLensSrc || cleanedSrc;
+    const stageKey = cleanKey + '||' + lensKey;
     const tE = performance.now();
 
-    // Stage A0 (heaviest sub-step): fresh gaussian random fields. Only on
-    // reseed/new image/forceHeavy -- NOT on a plain Size drag, since the
-    // underlying randomness doesn't need to change, only its blur radius.
-    const needsRaw = forceHeavy ||
-      lastRawParams.w !== w || lastRawParams.h !== h || lastRawParams.seedId !== seedId;
-    if (needsRaw) {
-      console.log('render: Stage A0 generating fresh gaussian noise ' + w + 'x' + h + '...');
-      const rRaw = (await makeNoiseFieldChunked(w,h,'r')).slice();
-      const gRaw = (await makeNoiseFieldChunked(w,h,'g')).slice();
-      const bRaw = (await makeNoiseFieldChunked(w,h,'b')).slice();
-      cachedRawNoise = { r: rRaw, g: gRaw, b: bRaw };
-      lastRawParams = { w, h, seedId };
-      console.log('render: Stage A0 done');
-    }
-    const t1 = performance.now();
-
-    // Stage A (heavy): blur the (possibly cached) raw noise. On size/clump change.
-    const needsBlur = needsRaw ||
-      lastBlurParams.w !== w || lastBlurParams.h !== h ||
-      lastBlurParams.size !== sizePx ||
-      lastBlurParams.clump !== p.clump;
-
-    if (needsBlur) {
-      console.log('render: Stage A blurring noise (r)...');
-      const rN = await grainBlur(cachedRawNoise.r, w, h, sizePx);
-      console.log('render: Stage A blurring noise (g)...');
-      const gN = await grainBlur(cachedRawNoise.g, w, h, sizePx);
-      console.log('render: Stage A blurring noise (b)...');
-      const bN = await grainBlur(cachedRawNoise.b, w, h, sizePx);
-      const monoN = new Float32Array(w*h);
-      for (let i=0;i<monoN.length;i++) monoN[i] = (rN[i]+gN[i]+bN[i])/3;
-      console.log('render: Stage A computing clump mask...');
-      const maskN = (await makeClumpMask(w,h,p.clump)) || new Float32Array(w*h).fill(1);
-      cachedNoiseFields = { r:rN, g:gN, b:bN, mono:monoN, mask: maskN };
-      lastBlurParams = { size:sizePx, clump:p.clump, w, h, seedId };
-      console.log('render: Stage A done');
-    }
-    const t2 = performance.now();
-
-    // Stage B (medium): apply shadow-bias weight + channel mix -> grain delta,
-    // still independent of intensity. Recomputed on bias/chan change (or if A ran).
-    const needsCompose = needsBlur ||
-      lastComposeParams.bias !== p.bias || lastComposeParams.chan !== p.chan ||
-      lastComposeParams.w !== w || lastComposeParams.h !== h ||
-      lastComposeParams.seedId !== seedId ||
-      lastComposeParams.cleanKey !== (cleanKey + '||' + lensKey);
-
-    if (needsCompose) {
-      console.log('render: Stage B computing weight/mix for ' + w + 'x' + h + '...');
-      updatePowLUT(p.bias);
-      const cfM = cachedNoiseFields.mask;
-      const monoA=cachedNoiseFields.mono, rA=cachedNoiseFields.r, gA=cachedNoiseFields.g, bA=cachedNoiseFields.b;
-      const chanAmt=p.chan, invChan=1-chanAmt;
-      const n = w*h;
-      const gR=new Float32Array(n), gG=new Float32Array(n), gB=new Float32Array(n);
-      const CHUNK = 400000;
-      for (let start=0; start<n; start+=CHUNK){
-        const end = Math.min(n, start+CHUNK);
-        for (let px=start,i=start*4; px<end; px++, i+=4){
-          const r0=src[i], g0=src[i+1], b0=src[i+2];
-          const lum=(r0+g0+b0)/(3*255);
-          const weight = powLUT[(lum*255+0.5)|0];
-          const cf = cfM ? cfM[px] : 1;
-          const wcf = weight*cf;
-          const m = monoA[px]*invChan;
-          gR[px] = (m+rA[px]*chanAmt)*wcf;
-          gG[px] = (m+gA[px]*chanAmt)*wcf;
-          gB[px] = (m+bA[px]*chanAmt)*wcf;
-        }
-        if (end < n) { console.log('Stage B progress: ' + Math.round(end/n*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
-      }
-      cachedGrainDelta = { r:gR, g:gG, b:gB };
-      lastComposeParams = { bias:p.bias, chan:p.chan, w, h, seedId, cleanKey: cleanKey + '||' + lensKey };
-      console.log('render: Stage B done');
-    }
-
-    // Stage C (cheap): intensity-driven softening blend + grain amplitude. Runs every render.
-    console.log('render: Stage C compositing final image...');
-    const out = new Uint8ClampedArray(w*h*4);
-    const brR=blurredSrc.r, brG=blurredSrc.g, brB=blurredSrc.b;
-    const gDR=cachedGrainDelta.r, gDG=cachedGrainDelta.g, gDB=cachedGrainDelta.b;
-    const amp = p.intensity*0.9;
-    const blendAmt = Math.min(1,p.intensity/100)*0.22;
-    const liftL = Math.max(0, p.lift || 0) * 255;  // pavimento del nero in 0..255
-    const invK  = liftL > 0 ? 0.30 / liftL : 0;    // 1/K, ginocchio K = L/0.30
-    const halfW=w/2, intHalfW=Math.floor(halfW);
-
-    const bins = new Array(24).fill(0);
-    const histStep = Math.max(1, Math.floor((w*h)/20000));
-    let maxCount=1;
-    let col=0;
-
-    const STAGE_C_CHUNK = 400000;
-    const totalPx = w*h;
-    for (let chunkStart=0; chunkStart<totalPx; chunkStart+=STAGE_C_CHUNK){
-      const chunkEnd = Math.min(totalPx, chunkStart+STAGE_C_CHUNK);
-      for (let px=chunkStart, i=chunkStart*4; px<chunkEnd; px++, i+=4, col++){
-        if (col===w) col=0;
-        let r0=src[i], g0=src[i+1], b0=src[i+2];
-        if (isSplitScreen && col<intHalfW){
-          // "Before" side must be the pristine photo, so it has to read srcData
-          // rather than src -- src is the Stage D output once CCD Clean is on,
-          // which would silently make the comparison meaningless.
-          out[i]=srcData[i]; out[i+1]=srcData[i+1]; out[i+2]=srcData[i+2]; out[i+3]=srcData[i+3];
-          continue;
-        }
-        if (blendAmt>0){
-          r0 += (brR[px]-r0)*blendAmt;
-          g0 += (brG[px]-g0)*blendAmt;
-          b0 += (brB[px]-b0)*blendAmt;
-        }
-        if (liftL > 0){
-          // Film toe: f(x) = x + L*(1-x/K)^2 for x < K, identity above.
-          // Raises the black floor to L while compressing the shadow range
-          // into it (slope at x=0 is a constant 0.4 => 2.5:1). K scales with
-          // L, so the effect is strictly confined below the knee and midtones
-          // and highlights are mathematically untouched.
-          let d;
-          d = 1 - r0*invK; if (d > 0) r0 += liftL*d*d;
-          d = 1 - g0*invK; if (d > 0) g0 += liftL*d*d;
-          d = 1 - b0*invK; if (d > 0) b0 += liftL*d*d;
-        }
-        out[i]   = clamp8(r0 + gDR[px]*amp);
-        out[i+1] = clamp8(g0 + gDG[px]*amp);
-        out[i+2] = clamp8(b0 + gDB[px]*amp);
-        out[i+3] = src[i+3];
-
-        if (px % histStep === 0 && (!isSplitScreen || col>=intHalfW)){
-          const outLum=(out[i]+out[i+1]+out[i+2])/3;
-          const bin=Math.min(23, Math.floor(outLum/256*24));
-          bins[bin]++;
-          if(bins[bin]>maxCount) maxCount=bins[bin];
-        }
-      }
-      if (chunkEnd < totalPx) { console.log('Stage C progress: ' + Math.round(chunkEnd/totalPx*100) + '%'); await new Promise(r=>setTimeout(r,0)); }
-    }
-    console.log('render: Stage C done');
-
-    if (isSplitScreen){
-      for (let y=0;y<h;y++){
-        let idx=(y*w+Math.floor(halfW))*4;
-        out[idx]=201; out[idx+1]=67; out[idx+2]=46;
+    // Grain fields: depend only on seed, size, clump, dimensions. Built lazily
+    // (Intensity 0 never pays for them) and never rebuilt for export.
+    let fieldsRan = false;
+    if (p.intensity > 0){
+      const sizePx = grainSizePx(p.size, w, h);
+      const fKey = seedId + '|' + sizePx.toFixed(4) + '|' + p.clump + '|' + w + 'x' + h;
+      if (!cachedFields || lastFieldKey !== fKey){
+        fieldsRan = true;
+        cachedFields = null;
+        console.log('render: grain fields ' + w + 'x' + h + ' size ' + sizePx.toFixed(2) + 'px');
+        const clump = p.clump > 0.001 ? await makeClumpCoarse(w, h, seedId) : null;
+        const r = await makeGrainField(w, h, sizePx, seedId, 0, clump, p.clump, 'Grana R');
+        const g = await makeGrainField(w, h, sizePx, seedId, 1, clump, p.clump, 'Grana G');
+        const b = await makeGrainField(w, h, sizePx, seedId, 2, clump, p.clump, 'Grana B');
+        cachedFields = { r, g, b };
+        lastFieldKey = fKey;
       }
     }
+    const tA = performance.now();
 
-    let gpuPayload = null, gpuTransfer = [];
-    if (needsBlur && wantGpuData) {
-      console.log('render: building GPU payload (slicing noise fields for transfer)...');
-      const monoC = cachedNoiseFields.mono.slice(), rC2 = cachedNoiseFields.r.slice(),
-            gC2 = cachedNoiseFields.g.slice(), bC2 = cachedNoiseFields.b.slice(), maskC = cachedNoiseFields.mask.slice();
-      gpuPayload = { mono: monoC.buffer, r: rC2.buffer, g: gC2.buffer, b: bC2.buffer, mask: maskC.buffer };
-      gpuTransfer = [monoC.buffer, rC2.buffer, gC2.buffer, bC2.buffer, maskC.buffer];
-      console.log('render: GPU payload ready');
+    // Softness base: blur of the staged source, frame-relative radius.
+    const blendAmt = Math.max(0, Math.min(1, (p.softness||0) * 0.005));
+    let blurB = null;
+    if (blendAmt > 0){
+      const r = boxRadiusFor(SOFT_SIGMA_REF * Math.max(w, h) / GRAIN_REF_LONG_EDGE);
+      const bKey = stageKey + '|' + r + '|' + w + 'x' + h;
+      if (!cachedBlurStaged || lastBlurStagedKey !== bKey){
+        cachedBlurStaged = null;
+        progress('Morbidezza', 0);
+        cachedBlurStaged = await blurPlanesOf(src, w, h, r);
+        lastBlurStagedKey = bKey;
+      }
+      blurB = cachedBlurStaged;
+    } else if (cachedBlurStaged){
+      cachedBlurStaged = null; lastBlurStagedKey = '';   // free it when Softness goes to 0
     }
 
-    let jpegBuffer = null, jpegError = null, jpegW = w, jpegH = h;
+    const res = await compose(src, blurB, blendAmt, p, p.intensity > 0 ? cachedFields : null,
+                              w, h, isSplitScreen, pv);
+    const tC = performance.now();
+
+    let jpegBuffer = null, jpegError = null, jpegW = res.w, jpegH = res.h;
     if (msg.wantJpegExport) {
       try {
-        console.log('jpegli: getting module (first call compiles/instantiates WASM)...');
+        progress('Export JPEG', 0);
         const Module = await getJpegliModule();
         const heapBefore = Module.HEAPU8.length;
-        console.log('jpegli: module ready (heap ' + (heapBefore/1048576).toFixed(0) + 'MB), encoding ' + w + 'x' + h + (msg.addBorder ? ' with border' : '') + ', progressive=' + (msg.jpegProgressive === undefined ? 2 : msg.jpegProgressive) + '...');
-        const result = encodeWithJpegli(Module, out, w, h, msg.jpegDistance || 1.0, !!msg.addBorder, msg.jpegProgressive);
+        console.log('jpegli: encoding ' + res.w + 'x' + res.h + (msg.addBorder ? ' with border' : '') + ', progressive=' + (msg.jpegProgressive === undefined ? 2 : msg.jpegProgressive));
+        const result = encodeWithJpegli(Module, res.out, res.w, res.h, msg.jpegDistance || 1.0, !!msg.addBorder, msg.jpegProgressive);
         jpegBuffer = result.buffer;
         jpegW = result.w; jpegH = result.h;
         const heapAfter = Module.HEAPU8.length;
-        console.log('jpegli: encode returned, size=' + (jpegBuffer ? (jpegBuffer.byteLength/1048576).toFixed(1)+'MB' : 'null') +
-          ', heap ' + (heapBefore/1048576).toFixed(0) + '->' + (heapAfter/1048576).toFixed(0) + 'MB' +
-          ' (' + ((heapAfter-heapBefore)/(w*h)).toFixed(2) + ' B/px this encode)');
+        console.log('jpegli: ' + (jpegBuffer.byteLength/1048576).toFixed(1) + 'MB, heap ' +
+          (heapBefore/1048576).toFixed(0) + '->' + (heapAfter/1048576).toFixed(0) + 'MB');
       } catch (err) {
         jpegError = (err && err.message) || String(err);
         console.error('jpegli: threw -- ' + jpegError);
@@ -1431,28 +1536,23 @@ async function handleMessage(e){
     const t3 = performance.now();
     const timing = {
       total: +(t3-t0).toFixed(1),
-      // Explicit ran-flags, not wall clock: on a loaded machine a cached stage
-      // can still measure tens of ms of scheduler noise, which made a
-      // timing-based cache assertion flaky.
       stageD: +(tD-t0).toFixed(1), stageDRan: cleanRan,
       stageE: +(tE-tD).toFixed(1), stageERan: lensRan,
-      stageA0: +(t1-tE).toFixed(1), stageA0Ran: needsRaw,
-      stageA: +(t2-t1).toFixed(1), stageARan: needsBlur,
-      stageBC: +(t3-t2).toFixed(1), stageBRan: needsCompose,
-      w, h
+      stageA: +(tA-tE).toFixed(1), stageARan: fieldsRan,
+      stageC: +(tC-tA).toFixed(1),
+      w, h, outW: res.w, outH: res.h
     };
-
-    const transferList = [out.buffer];
-    if (gpuPayload) transferList.push(...gpuTransfer);
+    // With a JPEG in hand the RGBA is only needed as a fallback: don't ship it.
+    const sendPixels = !jpegBuffer;
+    const transferList = [];
+    if (sendPixels) transferList.push(res.out.buffer);
     if (jpegBuffer) transferList.push(jpegBuffer);
-
-    console.log('render: posting final message back to main thread (' + (out.buffer.byteLength/1024/1024).toFixed(1) + 'MB RGBA' + (jpegBuffer ? ' + '+(jpegBuffer.byteLength/1024/1024).toFixed(1)+'MB JPEG' : '') + ')...');
     self.postMessage(
-      { cmd:'rendered', reqId, w, h, bins, maxCount, buffer: out.buffer, gpuData: gpuPayload, timing,
+      { cmd:'rendered', reqId, w: res.w, h: res.h, bins: res.bins, maxCount: res.maxCount,
+        buffer: sendPixels ? res.out.buffer : null, timing,
         jpeg: jpegBuffer, jpegError, jpegW, jpegH },
       transferList
     );
-    console.log('render: postMessage sent OK');
   }
 };
 </script>
@@ -1472,15 +1572,15 @@ modal.addEventListener('click', (e) => { if(e.target === modal) modal.classList.
 // One list, used by save, load and reset alike. Previously each of those had
 // its own hand-written sequence of assignments, which is how they drifted apart
 // every time a slider was added.
-const SLIDER_KEYS = ['intensity','size','clump','bias','lift','chan',
-                     'olpf','detail','chroma','ca','vignette','falloff'];
+const SLIDER_KEYS = ['intensity','size','clump','softness','bias','lift','chan',
+                     'olpf','detail','chroma','ca','vignette','falloff','halation'];
 // Reset means every effect off -- a true identity pass, not a "nice starting
 // look". Everything goes to 0 except bias, which is an exponent whose slider
 // runs 20..150 and whose NEUTRAL value is 100; 0 is neither reachable nor
 // meaningful there, and assigning it just clamps to 20, which is a setting, not
 // an absence of one.
-const OFF = { intensity:0, size:0, clump:0, bias:100, lift:0, chan:0,
-              olpf:0, detail:0, chroma:0, ca:0, vignette:0, falloff:0 };
+const OFF = { intensity:0, size:0, clump:0, softness:0, bias:100, lift:0, chan:0,
+              olpf:0, detail:0, chroma:0, ca:0, vignette:0, falloff:0, halation:0 };
 
 function applyValues(p){
   // Any key the caller omits falls back to OFF, so a partial object (an old
@@ -1497,14 +1597,18 @@ const presets = {
   // Every preset lists all keys explicitly, including the CCD Clean trio.
   // The pre-existing five keep olpf/detail/chroma at 0, so they render exactly
   // as they did before this feature existed.
-  '35mm': { intensity: 30, size: 14, clump: 40, bias: 60, chan: 60, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  kodak200: { intensity: 22, size: 12, clump: 30, bias: 70, chan: 85, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  hp5: { intensity: 45, size: 22, clump: 65, bias: 50, chan: 0, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  portra800: { intensity: 50, size: 28, clump: 75, bias: 65, chan: 90, lift: 20, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  heavy: { intensity: 80, size: 40, clump: 85, bias: 40, chan: 30, lift: 0, olpf: 0, detail: 0, chroma: 0 , ca: 0, vignette: 0, falloff: 40 },
-  ccdclean: { intensity: 14, size: 10, clump: 25, bias: 70, chan: 60, lift: 0, olpf: 25, detail: 60, chroma: 55, ca: 0, vignette: 0, falloff: 40 },
-  cybershot: { intensity: 20, size: 13, clump: 35, bias: 65, chan: 70, lift: 8, olpf: 45, detail: 80, chroma: 70, ca: 0, vignette: 0, falloff: 40 },
-  compatta: { intensity: 18, size: 12, clump: 30, bias: 68, chan: 65, lift: 6, olpf: 29, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30 },
+  // v4: intensities converted from v3 (see migrateV3) so each preset keeps its
+  // look on a 12MP photo; softness = what v3 applied implicitly (intensity x 0.44).
+  '35mm':    { intensity: 30, size: 14, clump: 40, softness: 13, bias: 60, chan: 60, lift: 0,  olpf: 0,  detail: 0,  chroma: 0,  ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  kodak200:  { intensity: 28, size: 12, clump: 30, softness: 10, bias: 70, chan: 85, lift: 0,  olpf: 0,  detail: 0,  chroma: 0,  ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  hp5:       { intensity: 27, size: 22, clump: 65, softness: 20, bias: 50, chan: 0,  lift: 0,  olpf: 0,  detail: 0,  chroma: 0,  ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  portra800: { intensity: 42, size: 28, clump: 75, softness: 22, bias: 65, chan: 90, lift: 20, olpf: 0,  detail: 0,  chroma: 0,  ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  heavy:     { intensity: 38, size: 40, clump: 85, softness: 35, bias: 40, chan: 30, lift: 0,  olpf: 0,  detail: 0,  chroma: 0,  ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  ccdclean:  { intensity: 16, size: 10, clump: 25, softness: 6,  bias: 70, chan: 60, lift: 0,  olpf: 25, detail: 60, chroma: 55, ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  cybershot: { intensity: 22, size: 13, clump: 35, softness: 9,  bias: 65, chan: 70, lift: 8,  olpf: 45, detail: 80, chroma: 70, ca: 0,  vignette: 0,  falloff: 40, halation: 0 },
+  compatta:  { intensity: 20, size: 12, clump: 30, softness: 8,  bias: 68, chan: 65, lift: 6,  olpf: 29, detail: 55, chroma: 60, ca: 45, vignette: 50, falloff: 30, halation: 0 },
+  // New in v4: a cinema-stock look where halation carries the character.
+  cine800t:  { intensity: 34, size: 24, clump: 60, softness: 18, bias: 70, chan: 85, lift: 10, olpf: 0,  detail: 0,  chroma: 0,  ca: 15, vignette: 25, falloff: 35, halation: 55 },
   // NB: no 'saved1' entry here. That slot is the user's localStorage save and
   // is resolved at selection time -- it used to be a hardcoded object, so
   // picking "Saved Custom 1" returned numbers that had nothing to do with what
@@ -1524,7 +1628,9 @@ const els = {
   chroma: document.getElementById("chroma"),
   ca: document.getElementById("ca"),
   vignette: document.getElementById("vignette"),
-  falloff: document.getElementById("falloff")
+  falloff: document.getElementById("falloff"),
+  softness: document.getElementById("softness"),
+  halation: document.getElementById("halation")
 };
 const vEls = {};
 for(let k in els) vEls[k] = document.getElementById("v-" + k);
@@ -1558,11 +1664,7 @@ renderWorker.onmessage = (e) => {
   const msg = e.data;
   if (msg.cmd === 'log') { window.__debugLog && window.__debugLog(msg.text, msg.isError); return; }
   if (msg.cmd === 'inited') { window.__debugLog && window.__debugLog('worker: inited'); return; }
-  if (msg.cmd === 'blurredSrcReady') {
-    window.__debugLog && window.__debugLog('worker: blurredSrcReady received, uploading base GPU textures...');
-    uploadGPUBaseTextures(msg.w, msg.h, new Uint8ClampedArray(msg.buffer), new Uint8ClampedArray(msg.blurR), new Uint8ClampedArray(msg.blurG), new Uint8ClampedArray(msg.blurB));
-    return;
-  }
+  if (msg.cmd === 'progress') { setLoaderText(msg.label + ' ' + msg.pct + '%'); return; }
   if (msg.cmd === 'workerError') {
     // Without this the dispatcher stays wedged: workerBusy is only cleared by a
     // 'rendered' callback, so a throw inside the worker would leave the loader
@@ -1574,7 +1676,7 @@ renderWorker.onmessage = (e) => {
     if (pendingParams) {
       const next = pendingParams;
       pendingParams = null;
-      sendToWorker(next.p, next.forceHeavy);
+      sendToWorker(next.p);
     }
     return;
   }
@@ -1582,15 +1684,9 @@ renderWorker.onmessage = (e) => {
   if (msg.timing) {
     const t = msg.timing;
     window.__debugLog && window.__debugLog(
-      `render ${t.w}x${t.h}: total ${t.total}ms ` +
-      `[D:${t.stageD}ms${t.stageDRan?'':' skip'} E:${t.stageE}ms${t.stageERan?'':' skip'} A0:${t.stageA0}ms${t.stageA0Ran?'':' skip'} A:${t.stageA}ms${t.stageARan?'':' skip'} B+C:${t.stageBC}ms${t.stageBRan?'':' (B skip)'}]`
+      `render ${t.w}x${t.h} -> ${t.outW}x${t.outH}: total ${t.total}ms ` +
+      `[D:${t.stageD}ms${t.stageDRan?'':' skip'} E:${t.stageE}ms${t.stageERan?'':' skip'} grain:${t.stageA}ms${t.stageARan?'':' skip'} C:${t.stageC}ms]`
     );
-  }
-  if (msg.gpuData) {
-    uploadGPUNoiseTextures(msg.w, msg.h,
-      new Float32Array(msg.gpuData.mono), new Float32Array(msg.gpuData.r),
-      new Float32Array(msg.gpuData.g), new Float32Array(msg.gpuData.b),
-      new Float32Array(msg.gpuData.mask));
   }
   const cb = pendingReqs.get(msg.reqId);
   if (cb) { pendingReqs.delete(msg.reqId); cb(msg); }
@@ -1600,12 +1696,12 @@ renderWorker.onerror = (e) => {
   window.__debugLog && window.__debugLog('❌ WORKER ERROR: ' + e.message + ' @ ' + e.filename + ':' + e.lineno, true);
 };
 
-function workerRenderOnce(params, forceHeavy, seedId, splitScreen, extra){
+function workerRenderOnce(params, seedId, splitScreen, extra){
   const reqId = ++reqCounter;
   return new Promise((resolve) => {
     pendingReqs.set(reqId, resolve);
     renderWorker.postMessage(Object.assign(
-      { cmd:'render', reqId, params, forceHeavy, seedId, isSplitScreen: splitScreen, wantGpuData: false },
+      { cmd:'render', reqId, params, seedId, isSplitScreen: splitScreen },
       extra || {}
     ));
   });
@@ -1615,239 +1711,8 @@ const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 const stage = document.getElementById("stage");
 const loader = document.getElementById("loader");
+function setLoaderText(t){ loader.textContent = t; }
 
-/* ---------- GPU instant preview (optional fast lane) ----------
-   Purely additive: draws a transparent overlay on top of the real canvas
-   with the SAME math as Stage B+C, so intensity/bias/chan feel instant
-   during a drag. The authoritative worker result (already fully tested)
-   always lands right after and is what actually gets shown/saved -- if
-   anything about the GPU path is wrong or unsupported, it silently never
-   activates and the app behaves exactly as before.
-
-   IMPORTANT: textures are capped at GPU_MAX_DIM regardless of the source
-   photo's native resolution. This is preview-only (the real export always
-   goes through the full-res CPU/worker path), and iOS Safari has tight
-   WebGL memory ceilings -- full-res float textures on a 12MP+ photo can
-   silently crash the tab with no catchable error. Capping resolution keeps
-   total GPU memory in the tens-of-MB range no matter how large the photo is.
-*/
-const GPU_MAX_DIM = 1024;
-function computeGpuDims(w, h){
-  const scale = Math.min(1, GPU_MAX_DIM / Math.max(w, h));
-  return { gw: Math.max(1, Math.round(w*scale)), gh: Math.max(1, Math.round(h*scale)) };
-}
-function downsample(src, w, h, gw, gh, channels){
-  const out = new src.constructor(gw*gh*channels);
-  for (let gy=0; gy<gh; gy++){
-    const sy = Math.min(h-1, Math.floor(gy*h/gh));
-    for (let gx=0; gx<gw; gx++){
-      const sx = Math.min(w-1, Math.floor(gx*w/gw));
-      const si = (sy*w+sx)*channels, di = (gy*gw+gx)*channels;
-      for (let c=0;c<channels;c++) out[di+c] = src[si+c];
-    }
-  }
-  return out;
-}
-
-const gpuCanvas = document.getElementById('gpu-canvas');
-let gl = null, glProg = null, glReady = false, glTexturesReady = false;
-let glUniforms = {}, glTex = null;
-
-function initGL(){
-  window.__debugLog && window.__debugLog('initGL() starting...');
-  try {
-    gl = gpuCanvas.getContext('webgl2', { premultipliedAlpha: false });
-    window.__debugLog && window.__debugLog('getContext webgl2 -> ' + (gl ? 'OK' : 'NULL (unsupported)'));
-    if (!gl) return false;
-
-    const vsSrc = `#version 300 es
-      in vec2 aPos;
-      out vec2 vUv;
-      void main(){
-        vUv = aPos * 0.5 + 0.5;
-        gl_Position = vec4(aPos, 0.0, 1.0);
-      }`;
-    const fsSrc = `#version 300 es
-      precision highp float;
-      in vec2 vUv;
-      uniform sampler2D uSrc;
-      uniform sampler2D uBlur;
-      uniform sampler2D uNoise; // rgba: mono,r,g,b
-      uniform sampler2D uMask;
-      uniform float uBias;
-      uniform float uChan;
-      uniform float uAmp;
-      uniform float uBlendAmt;
-      uniform float uLift;
-      uniform float uInvK;
-      uniform float uSplit;
-      out vec4 fragColor;
-      void main(){
-        vec2 uv = vec2(vUv.x, 1.0 - vUv.y);
-        vec4 src = texture(uSrc, uv);
-        if (uSplit > 0.5 && uv.x < 0.5) { fragColor = src; return; }
-        vec4 noise = texture(uNoise, uv);
-        float mask = texture(uMask, uv).r;
-        float lum = (src.r+src.g+src.b) / 3.0;
-        float weight = pow(clamp(1.0-lum,0.0,1.0), 1.0/uBias);
-        float wcf = weight * mask;
-        float invChan = 1.0 - uChan;
-        float m = noise.r * invChan;
-        vec3 grain = vec3(
-          (m + noise.g*uChan) * wcf,
-          (m + noise.b*uChan) * wcf,
-          (m + noise.a*uChan) * wcf
-        );
-        vec3 blur = texture(uBlur, uv).rgb;
-        vec3 base = mix(src.rgb, blur, uBlendAmt);
-        vec3 toe = max(vec3(0.0), 1.0 - base*uInvK);
-        base = base + uLift*toe*toe;
-        vec3 result = base + (grain * uAmp) * (1.0/255.0);
-        fragColor = vec4(clamp(result, 0.0, 1.0), src.a);
-      }`;
-
-    function compile(type, src){
-      const s = gl.createShader(type);
-      gl.shaderSource(s, src);
-      gl.compileShader(s);
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-        const log = gl.getShaderInfoLog(s);
-        gl.deleteShader(s);
-        throw new Error(log);
-      }
-      return s;
-    }
-    const vs = compile(gl.VERTEX_SHADER, vsSrc);
-    const fs = compile(gl.FRAGMENT_SHADER, fsSrc);
-    glProg = gl.createProgram();
-    gl.attachShader(glProg, vs);
-    gl.attachShader(glProg, fs);
-    gl.linkProgram(glProg);
-    if (!gl.getProgramParameter(glProg, gl.LINK_STATUS)) {
-      throw new Error(gl.getProgramInfoLog(glProg));
-    }
-    gl.useProgram(glProg);
-
-    const quad = new Float32Array([-1,-1, 1,-1, -1,1, 1,1]);
-    const buf = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, buf);
-    gl.bufferData(gl.ARRAY_BUFFER, quad, gl.STATIC_DRAW);
-    const aPos = gl.getAttribLocation(glProg, 'aPos');
-    gl.enableVertexAttribArray(aPos);
-    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
-
-    glUniforms = {
-      uSrc: gl.getUniformLocation(glProg,'uSrc'),
-      uBlur: gl.getUniformLocation(glProg,'uBlur'),
-      uNoise: gl.getUniformLocation(glProg,'uNoise'),
-      uMask: gl.getUniformLocation(glProg,'uMask'),
-      uBias: gl.getUniformLocation(glProg,'uBias'),
-      uChan: gl.getUniformLocation(glProg,'uChan'),
-      uAmp: gl.getUniformLocation(glProg,'uAmp'),
-      uBlendAmt: gl.getUniformLocation(glProg,'uBlendAmt'),
-      uLift: gl.getUniformLocation(glProg,'uLift'),
-      uInvK: gl.getUniformLocation(glProg,'uInvK'),
-      uSplit: gl.getUniformLocation(glProg,'uSplit'),
-    };
-
-    glTex = {
-      src: gl.createTexture(), blur: gl.createTexture(),
-      noise: gl.createTexture(), mask: gl.createTexture()
-    };
-    window.__debugLog && window.__debugLog('initGL() SUCCESS - shaders compiled, textures created');
-    return true;
-  } catch(err) {
-    console.warn('GPU preview unavailable, using CPU path only:', err);
-    window.__debugLog && window.__debugLog('initGL() FAILED: ' + (err.stack || err.message || String(err)));
-    gl = null;
-    return false;
-  }
-}
-
-function glSetupTexture(unit, format, type, w, h, data){
-  gl.activeTexture(gl.TEXTURE0 + unit);
-  const tex = [glTex.src, glTex.blur, glTex.noise, glTex.mask][unit];
-  gl.bindTexture(gl.TEXTURE_2D, tex);
-  const baseFormat = format === gl.RGBA8 ? gl.RGBA : (format === gl.R32F ? gl.RED : gl.RGBA);
-  gl.texImage2D(gl.TEXTURE_2D, 0, format, w, h, 0, baseFormat, type, data);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-}
-
-let gpuTexW = 0, gpuTexH = 0;
-function uploadGPUBaseTextures(w, h, srcBytes, blurR, blurG, blurB){
-  if (!glReady) return;
-  const t0 = performance.now();
-  try {
-    const { gw, gh } = computeGpuDims(w, h);
-    gpuTexW = gw; gpuTexH = gh;
-    gpuCanvas.width = gw; gpuCanvas.height = gh;
-    gl.viewport(0,0,gw,gh);
-
-    const srcSmall = (gw===w && gh===h) ? srcBytes : downsample(srcBytes, w, h, gw, gh, 4);
-    glSetupTexture(0, gl.RGBA8, gl.UNSIGNED_BYTE, gw, gh, srcSmall);
-
-    const blurRGBA = new Uint8Array(w*h*4);
-    for (let i=0,px=0; px<w*h; px++, i+=4){ blurRGBA[i]=blurR[px]; blurRGBA[i+1]=blurG[px]; blurRGBA[i+2]=blurB[px]; blurRGBA[i+3]=255; }
-    const blurSmall = (gw===w && gh===h) ? blurRGBA : downsample(blurRGBA, w, h, gw, gh, 4);
-    glSetupTexture(1, gl.RGBA8, gl.UNSIGNED_BYTE, gw, gh, blurSmall);
-    window.__debugLog && window.__debugLog('GPU base textures uploaded: ' + w+'x'+h + ' -> capped ' + gw+'x'+gh + ' (' + (performance.now()-t0).toFixed(1) + 'ms)');
-  } catch(err) { console.warn('GPU base texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUBaseTextures FAILED: ' + (err.stack||err.message||String(err)), true); glReady = false; }
-}
-
-function uploadGPUNoiseTextures(w, h, mono, r, g, b, mask){
-  if (!glReady) return;
-  const t0 = performance.now();
-  try {
-    const { gw, gh } = computeGpuDims(w, h);
-    const noiseRGBA = new Float32Array(w*h*4);
-    for (let i=0,px=0; px<w*h; px++, i+=4){
-      noiseRGBA[i]=mono[px]; noiseRGBA[i+1]=r[px]; noiseRGBA[i+2]=g[px]; noiseRGBA[i+3]=b[px];
-    }
-    const noiseSmall = (gw===w && gh===h) ? noiseRGBA : downsample(noiseRGBA, w, h, gw, gh, 4);
-    glSetupTexture(2, gl.RGBA32F, gl.FLOAT, gw, gh, noiseSmall);
-    const maskSmall = (gw===w && gh===h) ? mask : downsample(mask, w, h, gw, gh, 1);
-    glSetupTexture(3, gl.R32F, gl.FLOAT, gw, gh, maskSmall);
-    glTexturesReady = true;
-    window.__debugLog && window.__debugLog('GPU noise textures uploaded, preview live (' + (performance.now()-t0).toFixed(1) + 'ms)');
-  } catch(err) { console.warn('GPU noise texture upload failed:', err); window.__debugLog && window.__debugLog('uploadGPUNoiseTextures FAILED: ' + (err.stack||err.message||String(err)), true); glReady = false; glTexturesReady = false; }
-}
-
-function drawGPUPreview(p, splitScreen){
-  if (!glReady || !glTexturesReady) return false;
-  try {
-    gl.viewport(0,0,gpuTexW,gpuTexH);
-    gl.useProgram(glProg);
-    gl.uniform1i(glUniforms.uSrc, 0);
-    gl.uniform1i(glUniforms.uBlur, 1);
-    gl.uniform1i(glUniforms.uNoise, 2);
-    gl.uniform1i(glUniforms.uMask, 3);
-    gl.uniform1f(glUniforms.uBias, p.bias);
-    gl.uniform1f(glUniforms.uChan, p.chan);
-    gl.uniform1f(glUniforms.uAmp, p.intensity*0.9);
-    gl.uniform1f(glUniforms.uBlendAmt, Math.min(1,p.intensity/100)*0.22);
-    gl.uniform1f(glUniforms.uLift, Math.max(0, p.lift || 0));
-    gl.uniform1f(glUniforms.uInvK, (p.lift || 0) > 0 ? 0.30 / p.lift : 0);
-    gl.uniform1f(glUniforms.uSplit, splitScreen ? 1.0 : 0.0);
-    gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
-    // GPU canvas renders at a capped internal resolution but is displayed
-    // scaled up to match the real canvas exactly (CSS handles the upscale).
-    gpuCanvas.style.width = canvas.style.width;
-    gpuCanvas.style.height = canvas.style.height;
-    gpuCanvas.style.transform = canvas.style.transform;
-    gpuCanvas.style.display = 'block';
-    return true;
-  } catch(err) { console.warn('GPU draw failed:', err); glReady = false; return false; }
-}
-function hideGPUPreview(){ gpuCanvas.style.display = 'none'; }
-
-// TEMPORARILY DISABLED: GPU preview implicated in crashes correlated with
-// zoom interactions (memory pressure from a separate WebGL texture pool on
-// top of the worker's JS heap). Forcing CPU-only path to isolate the cause.
-// glReady = initGL();
-window.__debugLog && window.__debugLog('GPU preview disabled for this build (testing memory-pressure hypothesis).');
 
 // Pre-create histogram divs
 const histHost = document.getElementById("hist");
@@ -1872,6 +1737,8 @@ function readParams(){
     ca: +els.ca.value / 100,
     vignette: +els.vignette.value / 100,
     falloff: +els.falloff.value / 100,
+    softness: +els.softness.value,           // 0..100, worker maps to blend 0..0.5
+    halation: +els.halation.value / 100,
   };
 }
 
@@ -1893,6 +1760,8 @@ function updateReadout(){
   vEls.ca.textContent = els.ca.value;
   vEls.vignette.textContent = els.vignette.value;
   vEls.falloff.textContent = els.falloff.value;
+  vEls.softness.textContent = els.softness.value;
+  vEls.halation.textContent = els.halation.value;
 }
 
 /* ---------- Zoom & Pan Handlers (CSS transform based) ---------- */
@@ -2050,8 +1919,7 @@ window.addEventListener('orientationchange', () => {
 
 function loadImage(file){
   window.__debugLog && window.__debugLog('loadImage() called: ' + (file.name||'?') + ', ' + (file.size ? (file.size/1024/1024).toFixed(1)+'MB' : '?'));
-  glTexturesReady = false; // stale until the new image's textures land
-  hideGPUPreview();
+  currentFile = file;
   originalFileName = (file.name || "grain-pro-max-quality").replace(/\.[^/.]+$/, "");
   if(currentObjectUrl) URL.revokeObjectURL(currentObjectUrl);
   currentObjectUrl = URL.createObjectURL(file);
@@ -2100,6 +1968,13 @@ function loadImage(file){
     extractCtx.drawImage(image, 0, 0, w, h);
     window.__debugLog && window.__debugLog('offscreen drawImage OK, calling getImageData...');
     const imgData = extractCtx.getImageData(0,0,w,h);
+    // Display-size copy of the untouched photo for the A/B hold: drawn once
+    // here, so comparing costs nothing and never touches the worker.
+    origCanvas = new OffscreenCanvas(dispW, dispH);
+    const oc = origCanvas.getContext('2d');
+    oc.imageSmoothingQuality = 'high';
+    oc.drawImage(image, 0, 0, dispW, dispH);
+    lastProcessed = null;
     hasImage = true;
     window.__debugLog && window.__debugLog('getImageData OK (' + (imgData.data.length/1024/1024).toFixed(1) + 'MB), sending to worker...');
 
@@ -2115,40 +1990,37 @@ function loadImage(file){
     canvas.style.pointerEvents = "auto";
     document.getElementById("dims-readout").textContent = `(${w}\u00d7${h}px)`;
 
-    requestRender(true);
+    requestRender();
     fitToScreen();
     window.__debugLog && window.__debugLog('loadImage() finished, waiting for worker response...');
   };
   image.src = currentObjectUrl;
 }
 
-let procCanvas = null, procCtx = null; // reused offscreen canvas for downscaling the worker's full-res result onto the small display canvas
+// v4: the worker already delivers display-size pixels (area-averaged from the
+// full-res result), so they go straight onto the visible canvas -- no 48MB
+// staging canvas, no browser downscale.
+let lastProcessed = null, origCanvas = null, comparing = false, currentFile = null;
 function drawWorkerResult(msg){
-  window.__debugLog && window.__debugLog('drawWorkerResult: staging ' + msg.w + 'x' + msg.h + ' into offscreen, then downscaling to ' + canvas.width + 'x' + canvas.height + '...');
-  if (!procCanvas || procCanvas.width !== msg.w || procCanvas.height !== msg.h) {
-    procCanvas = new OffscreenCanvas(msg.w, msg.h);
-    procCtx = procCanvas.getContext('2d');
+  if (!msg.buffer) return;
+  if (msg.w !== canvas.width || msg.h !== canvas.height){
+    window.__debugLog && window.__debugLog('drawWorkerResult: size mismatch ' + msg.w + 'x' + msg.h + ' vs canvas ' + canvas.width + 'x' + canvas.height + ', dropped');
+    return;
   }
-  const imgData = new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h);
-  procCtx.putImageData(imgData, 0, 0);
-  // The VISIBLE canvas stays at its small capped resolution always; only the
-  // offscreen staging canvas ever holds full-res data, so the browser's
-  // compositor never has to keep a huge texture around for our pan/zoom.
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.drawImage(procCanvas, 0, 0, canvas.width, canvas.height);
-  window.__debugLog && window.__debugLog('drawWorkerResult: draw OK');
+  lastProcessed = new ImageData(new Uint8ClampedArray(msg.buffer), msg.w, msg.h);
+  if (!comparing) ctx.putImageData(lastProcessed, 0, 0);
   for (let i=0; i<24; i++){
     histDivs[i].style.height = Math.max(2, (msg.bins[i]/msg.maxCount)*40) + "px";
   }
-  hideGPUPreview();
   loader.classList.remove('active');
+  setLoaderText('Processing...');
 }
 
 let renderTimer = null;
 let workerBusy = false;
-let pendingParams = null; // {p, forceHeavy} newest requested render, sent as soon as the worker frees up
+let pendingParams = null; // {p} newest requested render, sent as soon as the worker frees up
 
-function sendToWorker(p, forceHeavy){
+function sendToWorker(p){
   workerBusy = true;
   latestLiveReqId = ++reqCounter;
   const myReqId = latestLiveReqId;
@@ -2158,17 +2030,14 @@ function sendToWorker(p, forceHeavy){
     if (pendingParams) {
       const next = pendingParams;
       pendingParams = null;
-      sendToWorker(next.p, next.forceHeavy);
+      sendToWorker(next.p);
     }
   });
-  renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, forceHeavy, seedId: currentSeedId, isSplitScreen,
-    // GPU preview is disabled, so don't make the worker slice and transfer the
-    // five full-res noise/mask arrays (~20 B/px, ~240MB on a 12MP image) that
-    // nothing would consume.
-    wantGpuData: false });
+  renderWorker.postMessage({ cmd:'render', reqId: myReqId, params: p, seedId: currentSeedId, isSplitScreen,
+    preview: { dw: canvas.width, dh: canvas.height } });
 }
 
-function requestRender(forceHeavy = false){
+function requestRender(){
   if(!hasImage) return;
   loader.classList.add('active');
   clearTimeout(renderTimer);
@@ -2179,9 +2048,9 @@ function requestRender(forceHeavy = false){
       // job in its queue, just remember the latest params. As soon as it's
       // free it jumps straight to this newest state, skipping every
       // intermediate value from a fast drag.
-      pendingParams = { p, forceHeavy: forceHeavy || (pendingParams ? pendingParams.forceHeavy : false) };
+      pendingParams = { p };
     } else {
-      sendToWorker(p, forceHeavy);
+      sendToWorker(p);
     }
   }, 20);
 }
@@ -2189,26 +2058,50 @@ function requestRender(forceHeavy = false){
 
 /* ---------- Wiring ---------- */
 
+const presetSel = document.getElementById("preset-sel");
 for(let key in els){
   els[key].addEventListener("input", (e) => {
     updateReadout();
     e.target.parentElement.classList.add("active");
-    const isHeavy = (key === 'size' || key === 'clump');
-    // The GPU fast lane composites grain over the ORIGINAL image textures, so
-    // it cannot represent Stage D at all -- showing it while a CCD Clean
-    // slider moves would flash the uncleaned photo back on screen. Those three
-    // go straight to the worker instead. They also must not set forceHeavy:
-    // the gaussian noise fields are unaffected by cleaning, and regenerating
-    // them is the single most expensive step in the pipeline.
-    const isClean = (key === 'olpf' || key === 'detail' || key === 'chroma' ||
-                     key === 'ca' || key === 'vignette' || key === 'falloff');
-    if (!isHeavy && !isClean && hasImage) drawGPUPreview(readParams(), isSplitScreen);
-    requestRender(isHeavy);
+    // A hand-moved slider is no longer the preset: say so in the menu, so
+    // re-picking the same preset actually re-applies it.
+    presetSel.value = "custom";
+    requestRender();
   });
   els[key].addEventListener("change", (e) => { e.target.parentElement.classList.remove("active"); });
   els[key].addEventListener("touchend", (e) => { e.target.parentElement.classList.remove("active"); });
   els[key].addEventListener("mouseup", (e) => { e.target.parentElement.classList.remove("active"); });
+  // Tap the value badge -> that effect off (its OFF value).
+  vEls[key].addEventListener("click", () => {
+    if (String(els[key].value) === String(OFF[key])) return;
+    els[key].value = OFF[key];
+    els[key].dispatchEvent(new Event('input'));
+    els[key].parentElement.classList.remove("active");
+  });
 }
+
+// A/B: hold to see the original. Pure canvas swap, no worker round-trip.
+(function(){
+  const b = document.getElementById("btn-compare");
+  const on = (e) => {
+    if (e) e.preventDefault();
+    if (!hasImage || !origCanvas || comparing) return;
+    comparing = true;
+    ctx.drawImage(origCanvas, 0, 0);
+    b.style.background = "var(--safelight)"; b.style.color = "#150705";
+  };
+  const off = () => {
+    if (!comparing) return;
+    comparing = false;
+    if (lastProcessed) ctx.putImageData(lastProcessed, 0, 0);
+    b.style.background = ""; b.style.color = "";
+  };
+  b.addEventListener("pointerdown", on);
+  b.addEventListener("pointerup", off);
+  b.addEventListener("pointerleave", off);
+  b.addEventListener("pointercancel", off);
+  b.addEventListener("contextmenu", (e) => e.preventDefault());
+})();
 
 document.getElementById("btn-split").addEventListener("click", function() {
   isSplitScreen = !isSplitScreen;
@@ -2228,20 +2121,20 @@ document.getElementById("preset-sel").addEventListener("change", (e) => {
     }
     applyValues(saved.values);
     if (saved.seedId) currentSeedId = saved.seedId;
-    requestRender(true);
+    requestRender();
     return;
   }
   if (presets[val]) {
     applyValues(presets[val]);
-    requestRender(true);
+    requestRender();
   }
 });
 
-document.getElementById("reseed").addEventListener("click", () => { currentSeedId++; requestRender(true); });
+document.getElementById("reseed").addEventListener("click", () => { currentSeedId++; requestRender(); });
 document.getElementById("reset").addEventListener("click", () => {
   document.getElementById("preset-sel").value = "custom";
   applyValues(OFF);
-  requestRender(true);
+  requestRender();
 });
 
 /* ---------- Local Save/Load (localStorage) ---------- */
@@ -2253,9 +2146,32 @@ document.getElementById("reset").addEventListener("click", () => {
 // OFF, and the seed travels with the save so the grain pattern comes back too.
 // Mirrors CC_OLPF_EXP in the worker; used only to migrate old saves.
 const CC_OLPF_EXP_UI = 0.75;
-const LS_KEY = "grainpro_custom_v3";
+const LS_KEY = "grainpro_custom_v4";
+const LS_KEY_V3 = "grainpro_custom_v3";
 const LS_KEY_V2 = "grainpro_custom_v2";
 const LS_KEY_LEGACY = "grainpro_custom_v1";
+
+/* v3 -> v4. v3's grain amplitude depended on Size (table below: std of v3's
+   blurred field per 0.25 of Size, measured at the 4000px reference) and on
+   Color Independence (mono = plain average of 3 fields). v4 normalises both,
+   so a v3 intensity is rescaled to give the same grain on a 12MP photo, and
+   the softening v3 applied implicitly (intensity x 0.22 blend) becomes an
+   explicit Softness of intensity x 0.44. */
+const V3_STD = [0.996,0.729,0.565,0.373,0.231,0.216,0.199,0.181,0.164,0.158,0.148,
+                0.141,0.134,0.13,0.127,0.125,0.118,0.112,0.111,0.108,0.104];
+const V4_GRAIN_K = 0.155;   // mirrors GRAIN_K in the worker
+function migrateV3(v){
+  const out = Object.assign({}, v);
+  const I = Number(v.intensity) || 0;
+  const size = (Number(v.size) || 0) / 10, c = (Number(v.chan) || 0) / 100;
+  const f = Math.min(20, Math.max(0, size/0.25)), i = Math.min(19, f|0);
+  const sd = V3_STD[i] + (V3_STD[i+1]-V3_STD[i])*(f-i);
+  const mix = Math.sqrt(Math.pow(c + (1-c)/3, 2) + 2*Math.pow((1-c)/3, 2));
+  out.intensity = Math.max(0, Math.min(100, Math.round(I*sd*mix/V4_GRAIN_K)));
+  out.softness = Math.min(100, Math.round(I*0.44));
+  out.halation = 0;
+  return out;
+}
 
 function readSaved(){
   try {
@@ -2264,8 +2180,12 @@ function readSaved(){
       const d = JSON.parse(raw);
       if (d && d.values) return d;
     }
-    // v2: same shape, but its olpf value was tuned against the old linear
-    // slider->sigma mapping. Convert so a restored save still looks the same:
+    const v3 = localStorage.getItem(LS_KEY_V3);
+    if (v3){
+      const d = JSON.parse(v3);
+      if (d && d.values){ d.values = migrateV3(d.values); d.v = 3; return d; }
+    }
+    // v2: olpf was tuned against the old linear slider->sigma mapping:
     // sigma was MAX*t, it is now MAX*t^EXP, so t_new = t_old^(1/EXP).
     const v2 = localStorage.getItem(LS_KEY_V2);
     if (v2){
@@ -2273,14 +2193,15 @@ function readSaved(){
       if (d && d.values){
         const o = Number(d.values.olpf);
         if (o > 0) d.values.olpf = Math.round(100 * Math.pow(o/100, 1/CC_OLPF_EXP_UI));
+        d.values = migrateV3(d.values); d.v = 2;
         return d;
       }
     }
-    // Migrate a v1 save: flat map of slider -> value, no seed, no olpf at all.
+    // v1: flat map of slider -> value, no seed, no olpf at all.
     const legacy = localStorage.getItem(LS_KEY_LEGACY);
     if (legacy){
       const d = JSON.parse(legacy);
-      if (d && typeof d === 'object') return { v:1, values:d, seedId:null };
+      if (d && typeof d === 'object') return { v:1, values:migrateV3(d), seedId:null };
     }
   } catch(e){
     window.__debugLog && window.__debugLog('readSaved FAILED: ' + (e.message||String(e)), true);
@@ -2294,7 +2215,7 @@ document.getElementById("save-local").addEventListener("click", () => {
   try {
     const values = {};
     for (const k of SLIDER_KEYS) values[k] = els[k].value;
-    const payload = { v:3, values, seedId: currentSeedId, at: Date.now() };
+    const payload = { v:4, values, seedId: currentSeedId, at: Date.now() };
     localStorage.setItem(LS_KEY, JSON.stringify(payload));
     // Verify it actually persisted (some browsers accept the call but silently
     // don't store anything, e.g. private browsing / file:// origin quirks).
@@ -2324,6 +2245,73 @@ document.getElementById("save-local").addEventListener("click", () => {
   window.__debugLog && window.__debugLog('loadLocal restored v' + (saved.v||1));
 })();
 
+/* ---------- EXIF carry-over ----------
+   jpegli writes pixels only, so date, camera, lens, GPS were lost on export.
+   The original APP1/Exif segment is copied into the output with three patches:
+   Orientation -> 1 (the browser already rotated the pixels, keeping the tag
+   would rotate the photo twice), ColorSpace -> sRGB (the pixels come out of an
+   sRGB canvas; iPhone files say "uncalibrated" because they are Display P3,
+   and no ICC profile is carried), PixelX/YDimension -> the exported size.
+   Anything unexpected -> export without EXIF rather than risk a broken file. */
+async function readExifSegment(file){
+  if (!file || !/jpe?g$/i.test(file.type || file.name || '')) return null;
+  const buf = new Uint8Array(await file.slice(0, 262144).arrayBuffer());
+  if (buf[0] !== 0xFF || buf[1] !== 0xD8) return null;
+  let p = 2;
+  while (p + 4 <= buf.length && buf[p] === 0xFF){
+    const m = buf[p+1];
+    if (m === 0xDA || m === 0xD9) break;                 // SOS / EOI: no more headers
+    const len = (buf[p+2] << 8) | buf[p+3];
+    if (m === 0xE1 && len > 8 && p + 2 + len <= buf.length &&
+        buf[p+4] === 0x45 && buf[p+5] === 0x78 && buf[p+6] === 0x69 && buf[p+7] === 0x66 && buf[p+8] === 0 && buf[p+9] === 0){
+      return buf.slice(p, p + 2 + len);                 // FFE1 + len + payload
+    }
+    p += 2 + len;
+  }
+  return null;
+}
+function patchExif(seg, w, h){
+  const dv = new DataView(seg.buffer, seg.byteOffset, seg.byteLength);
+  const T = 10;                                          // TIFF header offset inside the segment
+  const le = dv.getUint16(T) === 0x4949;
+  const u16 = (o) => dv.getUint16(T+o, le), u32 = (o) => dv.getUint32(T+o, le);
+  const set = (entry, v) => {
+    const type = u16(entry+2);
+    if (type === 3) dv.setUint16(T+entry+8, v, le);
+    else if (type === 4) dv.setUint32(T+entry+8, v, le);
+  };
+  const walk = (ifd, fn) => {
+    if (!ifd || T+ifd+2 > seg.length) return;
+    const n = u16(ifd);
+    for (let k=0; k<n; k++){
+      const e = ifd + 2 + k*12;
+      if (T+e+12 > seg.length) return;
+      fn(u16(e), e);
+    }
+  };
+  let exifIfd = 0;
+  walk(u32(4), (tag, e) => {
+    if (tag === 0x0112) set(e, 1);
+    else if (tag === 0x8769) exifIfd = u32(e+8);
+  });
+  walk(exifIfd, (tag, e) => {
+    if (tag === 0xA001) set(e, 1);
+    else if (tag === 0xA002) set(e, w);
+    else if (tag === 0xA003) set(e, h);
+  });
+  return seg;
+}
+function insertExif(jpeg, seg){
+  const j = new Uint8Array(jpeg);
+  let at = 2;                                            // after SOI...
+  if (j[2] === 0xFF && j[3] === 0xE0) at = 4 + ((j[4] << 8) | j[5]); // ...and after JFIF APP0 if present
+  const out = new Uint8Array(j.length + seg.length);
+  out.set(j.subarray(0, at), 0);
+  out.set(seg, at);
+  out.set(j.subarray(at), at + seg.length);
+  return out;
+}
+
 /* ---------- Max Quality, Min Size JPG Download (jpegli) ---------- */
 document.getElementById("download").addEventListener("click", async () => {
   if (!hasImage) return;
@@ -2333,6 +2321,7 @@ document.getElementById("download").addEventListener("click", async () => {
   const originalLabel = btn.textContent;
   btn.textContent = "Exporting...";
   btn.disabled = true;
+  loader.classList.add('active'); setLoaderText('Export...');
 
   try {
     const p = readParams();
@@ -2351,13 +2340,24 @@ document.getElementById("download").addEventListener("click", async () => {
     );
     // Always export the full processed image (never the split-screen divider),
     // regardless of what's currently shown on screen. Doesn't touch canvas/UI state.
-    const msg = await workerRenderOnce(p, true, currentSeedId, false,
+    const msg = await workerRenderOnce(p, currentSeedId, false,
       { wantJpegExport: true, jpegDistance: 1.0, addBorder, jpegProgressive: progLevel });
 
     let blob;
     if (msg.jpeg && !msg.jpegError) {
       window.__debugLog && window.__debugLog('jpegli encode OK: ' + (msg.jpeg.byteLength/1024/1024).toFixed(2) + 'MB, ' + msg.jpegW + 'x' + msg.jpegH);
-      blob = new Blob([msg.jpeg], { type: 'image/jpeg' });
+      let bytes = msg.jpeg;
+      try {
+        const seg = await readExifSegment(currentFile);
+        if (seg){
+          bytes = insertExif(msg.jpeg, patchExif(seg, msg.jpegW, msg.jpegH));
+          window.__debugLog && window.__debugLog('EXIF carried over (' + seg.length + ' B)');
+        }
+      } catch(err){
+        window.__debugLog && window.__debugLog('EXIF skipped: ' + (err.message||String(err)));
+        bytes = msg.jpeg;
+      }
+      blob = new Blob([bytes], { type: 'image/jpeg' });
     } else {
       window.__debugLog && window.__debugLog('jpegli unavailable (' + (msg.jpegError||'no jpeg in response') + '), falling back to OffscreenCanvas...', true);
       const border = addBorder ? Math.round(Math.max(msg.w, msg.h) * 0.01) : 0;
@@ -2374,7 +2374,7 @@ document.getElementById("download").addEventListener("click", async () => {
 
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.download = originalFileName + ".jpg";
+    a.download = originalFileName + "_grain.jpg";
     a.href = url;
     document.body.appendChild(a);
     a.click();
@@ -2387,6 +2387,7 @@ document.getElementById("download").addEventListener("click", async () => {
   } finally {
     btn.textContent = originalLabel;
     btn.disabled = false;
+    if (!workerBusy){ loader.classList.remove('active'); setLoaderText('Processing...'); }
   }
 });
 
